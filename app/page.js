@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useDropzone } from "react-dropzone";
 import { toPng } from "html-to-image";
 import { saveAs } from "file-saver";
-import { templates, getTemplate } from "@/lib/templates";
 import { adSizes, getAdSize } from "@/lib/ad-sizes";
 import { brandContext } from "@/lib/brand-context";
 import { supabase } from "@/lib/supabase";
@@ -14,8 +13,14 @@ const FLAVORS = [
   ...new Set(brandContext.products.map((p) => p.flavor)),
 ];
 
+function formatFieldName(key) {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function Home() {
-  // Flow state: null = home, "reference" = copy reference, "scratch" = create from scratch
+  // Flow state: null = home, "reference" = copy reference, "scratch" = from scratch
   const [flow, setFlow] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
@@ -23,8 +28,6 @@ export default function Home() {
   // Reference flow
   const [referenceImage, setReferenceImage] = useState(null);
   const [referencePreview, setReferencePreview] = useState(null);
-
-  // Reference flow — optional direction
   const [referenceNotes, setReferenceNotes] = useState("");
 
   // Scratch flow
@@ -35,43 +38,19 @@ export default function Home() {
   const [flavor, setFlavor] = useState("All / General");
   const [channel, setChannel] = useState("social");
 
-  // Generated ad state
-  const [analysis, setAnalysis] = useState(null);
-  const [templateId, setTemplateId] = useState("hero-product");
-  const [copyVariations, setCopyVariations] = useState([]);
-  const [selectedCopy, setSelectedCopy] = useState(null);
-  const [customCopy, setCustomCopy] = useState({
-    headline: "",
-    subheadline: "",
-    body: "",
-    cta: "",
-  });
-
-  // Visual customization
+  // AI-generated ad
+  const [generatedHtml, setGeneratedHtml] = useState(null);
+  const [fields, setFields] = useState({});
   const [backgroundColor, setBackgroundColor] = useState("#fffbec");
   const [textColor, setTextColor] = useState("#4b1c10");
   const [accentColor, setAccentColor] = useState("#f0615a");
-
-  // Brand assets
-  const [brandAssets, setBrandAssets] = useState([]);
-  const [selectedProductImage, setSelectedProductImage] = useState(null);
-  const [selectedBackground, setSelectedBackground] = useState(null);
-  const [selectedLogo, setSelectedLogo] = useState(null);
 
   // Export
   const [exporting, setExporting] = useState(false);
   const [saving, setSaving] = useState(false);
   const adPreviewRef = useRef(null);
 
-  // Fetch brand assets on mount
-  useEffect(() => {
-    fetch("/api/brand-assets")
-      .then((res) => res.json())
-      .then((data) => setBrandAssets(data.assets || []))
-      .catch(console.error);
-  }, []);
-
-  // Reference image dropzone
+  // Dropzone for reference image
   const onDropReference = useCallback((files) => {
     const file = files[0];
     if (!file) return;
@@ -88,64 +67,67 @@ export default function Home() {
     maxSize: 10 * 1024 * 1024,
   });
 
-  // Flow 1: Copy Reference — analyze + generate copy in one go
+  // Render HTML by substituting field tokens
+  function renderAd() {
+    if (!generatedHtml) return "";
+    let html = generatedHtml;
+    Object.entries(fields).forEach(([key, value]) => {
+      html = html.replaceAll(`{{${key}}}`, value || "");
+    });
+    return html;
+  }
+
+  // Update color in the generated HTML via find-replace
+  function handleColorChange(type, newColor) {
+    const oldColor =
+      type === "bg"
+        ? backgroundColor
+        : type === "text"
+          ? textColor
+          : accentColor;
+    if (oldColor && generatedHtml) {
+      const escaped = oldColor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "gi");
+      setGeneratedHtml((prev) => prev.replace(regex, newColor));
+    }
+    if (type === "bg") setBackgroundColor(newColor);
+    else if (type === "text") setTextColor(newColor);
+    else setAccentColor(newColor);
+  }
+
+  // Flow 1: Recreate from reference image
   async function handleRecreate() {
     if (!referencePreview) return;
     setGenerating(true);
     setError(null);
 
     try {
-      // Step 1: Analyze the reference image
       const base64 = referencePreview.split(",")[1];
       const mediaType = referenceImage.type || "image/png";
-      const analyzeRes = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64, mediaType }),
-      });
-      const analyzeData = await analyzeRes.json();
+      const size = getAdSize(adSizeId);
 
-      if (!analyzeRes.ok)
-        throw new Error(analyzeData.error || "Analysis failed");
-
-      const result = analyzeData.analysis;
-      setAnalysis(result);
-
-      // Set template from analysis
-      if (result.suggestedTemplate) {
-        setTemplateId(result.suggestedTemplate);
-      }
-
-      // Map colors from analysis to brand-adjacent colors
-      if (result.colorPalette?.length >= 2) {
-        setBackgroundColor(result.colorPalette[0] || "#fffbec");
-        setTextColor(result.colorPalette[1] || "#4b1c10");
-        if (result.colorPalette[2]) {
-          setAccentColor(result.colorPalette[2]);
-        }
-      }
-
-      // Step 2: Generate copy based on the analysis
-      const product = brandContext.products.find((p) => p.flavor === flavor);
-      const copyRes = await fetch("/api/generate-copy", {
+      const res = await fetch("/api/recreate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          imageBase64: base64,
+          mediaType,
+          adWidth: size.width,
+          adHeight: size.height,
+          userNotes: referenceNotes || null,
           flavor: flavor === "All / General" ? null : flavor,
-          sku: product?.sku || null,
           channel,
-          tone: "playful, warm, energetic",
-          referenceAnalysis: result,
-          userPrompt: `Recreate this ad's copy style for ChiChi Foods. The reference ad style: ${result.styleNotes || ""}. Match the energy and format of the original.${referenceNotes ? ` Additional direction from the user: ${referenceNotes}` : ""}`,
         }),
       });
-      const copyData = await copyRes.json();
 
-      if (copyData.variations) {
-        setCopyVariations(copyData.variations);
-        setSelectedCopy(0);
-        setCustomCopy(copyData.variations[0]);
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to recreate ad");
+
+      setGeneratedHtml(data.html);
+      setFields(data.fields || {});
+      if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
+      if (data.textColor) setTextColor(data.textColor);
+      if (data.accentColor) setAccentColor(data.accentColor);
     } catch (err) {
       console.error("Recreate failed:", err);
       setError(err.message || "Something went wrong. Please try again.");
@@ -154,60 +136,34 @@ export default function Home() {
     }
   }
 
-  // Flow 2: Create from Scratch — generate everything from description
+  // Flow 2: Generate from scratch
   async function handleCreateFromScratch() {
     if (!adDescription.trim()) return;
     setGenerating(true);
     setError(null);
 
     try {
-      const product = brandContext.products.find((p) => p.flavor === flavor);
-      const copyRes = await fetch("/api/generate-copy", {
+      const size = getAdSize(adSizeId);
+      const res = await fetch("/api/generate-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          description: adDescription,
+          adWidth: size.width,
+          adHeight: size.height,
           flavor: flavor === "All / General" ? null : flavor,
-          sku: product?.sku || null,
           channel,
-          tone: "playful, warm, energetic",
-          userPrompt: adDescription,
         }),
       });
-      const copyData = await copyRes.json();
 
-      if (!copyRes.ok)
-        throw new Error(copyData.error || "Copy generation failed");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate ad");
 
-      if (copyData.variations) {
-        setCopyVariations(copyData.variations);
-        setSelectedCopy(0);
-        setCustomCopy(copyData.variations[0]);
-      }
-
-      // Auto-pick template based on description keywords
-      const desc = adDescription.toLowerCase();
-      if (
-        desc.includes("lifestyle") ||
-        desc.includes("background") ||
-        desc.includes("photo")
-      ) {
-        setTemplateId("lifestyle-overlay");
-      } else if (
-        desc.includes("bold") ||
-        desc.includes("big text") ||
-        desc.includes("typography") ||
-        desc.includes("minimal")
-      ) {
-        setTemplateId("bold-typography");
-      } else if (
-        desc.includes("split") ||
-        desc.includes("side by side") ||
-        desc.includes("half")
-      ) {
-        setTemplateId("split-layout");
-      } else {
-        setTemplateId("hero-product");
-      }
+      setGeneratedHtml(data.html);
+      setFields(data.fields || {});
+      if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
+      if (data.textColor) setTextColor(data.textColor);
+      if (data.accentColor) setAccentColor(data.accentColor);
     } catch (err) {
       console.error("Create failed:", err);
       setError(err.message || "Something went wrong. Please try again.");
@@ -216,24 +172,32 @@ export default function Home() {
     }
   }
 
-  // Reset to home
+  // Regenerate with same inputs
+  async function handleRegenerate() {
+    if (flow === "reference") await handleRecreate();
+    else await handleCreateFromScratch();
+  }
+
+  // Reset everything
   function resetFlow() {
     setFlow(null);
+    setGeneratedHtml(null);
+    setFields({});
     setReferenceImage(null);
     setReferencePreview(null);
     setReferenceNotes("");
     setAdDescription("");
-    setAnalysis(null);
-    setCopyVariations([]);
-    setSelectedCopy(null);
-    setCustomCopy({ headline: "", subheadline: "", body: "", cta: "" });
     setError(null);
     setBackgroundColor("#fffbec");
     setTextColor("#4b1c10");
     setAccentColor("#f0615a");
-    setSelectedProductImage(null);
-    setSelectedBackground(null);
-    setSelectedLogo(null);
+  }
+
+  // Go back to input form (keep settings, clear generated ad)
+  function goBackToInput() {
+    setGeneratedHtml(null);
+    setFields({});
+    setError(null);
   }
 
   // Export as PNG
@@ -278,20 +242,18 @@ export default function Home() {
       }
 
       const size = getAdSize(adSizeId);
+      const headlineField =
+        fields.headline || Object.values(fields)[0] || "Untitled Ad";
+
       const { error: dbError } = await supabase.from("generated_ads").insert({
-        name: customCopy.headline || "Untitled Ad",
+        name: headlineField,
         ad_size: `${size.width}x${size.height}`,
-        template_id: templateId,
-        headline: customCopy.headline,
-        subheadline: customCopy.subheadline,
-        body_copy: customCopy.body,
-        cta_text: customCopy.cta,
-        reference_analysis: analysis,
-        selected_assets: {
-          productImage: selectedProductImage,
-          background: selectedBackground,
-          logo: selectedLogo,
-        },
+        template_id: "ai-generated",
+        headline: fields.headline || headlineField,
+        subheadline: fields.subheadline || "",
+        body_copy: fields.body || fields.description || "",
+        cta_text: fields.cta || "",
+        reference_analysis: { generatedHtml, fields },
         template_vars: { backgroundColor, textColor, accentColor },
         flavor: flavor === "All / General" ? null : flavor,
         channel,
@@ -306,30 +268,11 @@ export default function Home() {
     }
   }
 
-  // Build template variables + preview
+  // Preview dimensions
   const size = getAdSize(adSizeId);
-  const templateVars = {
-    width: size.width,
-    height: size.height,
-    headline: customCopy.headline || "Your Headline Here",
-    subheadline: customCopy.subheadline || "",
-    body: customCopy.body || "",
-    cta: customCopy.cta || "",
-    productImage: selectedProductImage || "",
-    backgroundImage: selectedBackground || "",
-    logo: selectedLogo || "",
-    backgroundColor,
-    textColor,
-    accentColor,
-    fontFamily: "Questa Sans, system-ui, sans-serif",
-    headingFont: "Decoy, serif",
-  };
-
-  const currentTemplate = getTemplate(templateId);
-  const adHtml = currentTemplate.render(templateVars);
   const maxPreviewWidth = 500;
   const scale = Math.min(maxPreviewWidth / size.width, 1);
-  const hasGenerated = copyVariations.length > 0;
+  const adHtml = renderAd();
 
   // ==================== HOME ====================
   if (!flow) {
@@ -407,8 +350,8 @@ export default function Home() {
     );
   }
 
-  // ==================== FLOW 1: COPY REFERENCE ====================
-  if (flow === "reference" && !hasGenerated) {
+  // ==================== FLOW 1: COPY REFERENCE (input) ====================
+  if (flow === "reference" && !generatedHtml) {
     return (
       <div className="max-w-2xl">
         <button
@@ -422,8 +365,8 @@ export default function Home() {
           Copy a Reference Ad
         </h1>
         <p className="text-chocolate/60 mb-8">
-          Upload an ad you like. We&apos;ll analyze its layout and style, then
-          recreate it for ChiChi.
+          Upload an ad you like. We&apos;ll recreate the exact layout for ChiChi
+          using your brand colors and fonts.
         </p>
 
         {/* Upload zone */}
@@ -536,8 +479,8 @@ export default function Home() {
           <textarea
             value={referenceNotes}
             onChange={(e) => setReferenceNotes(e.target.value)}
-            placeholder="e.g., Make it about our Apple Cinnamon flavor, keep the same bold layout but use our peach and vanilla colors, add a promo code..."
-            className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-20 resize-none placeholder:text-chocolate/30"
+            placeholder="e.g., Use the exact same 6-box grid. The text for each box should be: HIGH PROTEIN - 13g complete protein per serving, GLUTEN FREE - Zero gluten..."
+            className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-24 resize-none placeholder:text-chocolate/30"
           />
         </div>
 
@@ -575,7 +518,7 @@ export default function Home() {
                   className="opacity-75"
                 />
               </svg>
-              Analyzing & generating...
+              Recreating your ad...
             </span>
           ) : (
             "Recreate for ChiChi"
@@ -585,8 +528,8 @@ export default function Home() {
     );
   }
 
-  // ==================== FLOW 2: CREATE FROM SCRATCH ====================
-  if (flow === "scratch" && !hasGenerated) {
+  // ==================== FLOW 2: CREATE FROM SCRATCH (input) ====================
+  if (flow === "scratch" && !generatedHtml) {
     return (
       <div className="max-w-2xl">
         <button
@@ -600,8 +543,8 @@ export default function Home() {
           Create from Scratch
         </h1>
         <p className="text-chocolate/60 mb-8">
-          Describe what you want and AI will generate everything — copy, layout,
-          and style.
+          Describe what you want and AI will design the full ad — layout, copy,
+          colors, everything.
         </p>
 
         {/* Description input */}
@@ -612,7 +555,7 @@ export default function Home() {
           <textarea
             value={adDescription}
             onChange={(e) => setAdDescription(e.target.value)}
-            placeholder="e.g., Bold Instagram ad for Apple Cinnamon flavor. Focus on 20g protein and how it's perfect for busy mornings. Fun and colorful vibe."
+            placeholder="e.g., A bold 2x3 grid showing 6 nutritional benefits of ChiChi, similar to an infographic. Use our teal and vanilla colors. Make it pop."
             className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-32 resize-none placeholder:text-chocolate/30"
           />
         </div>
@@ -673,10 +616,11 @@ export default function Home() {
           <p className="text-xs text-chocolate/40 mb-2">Quick ideas:</p>
           <div className="flex flex-wrap gap-2">
             {[
+              "6-box grid showing nutritional benefits",
               "Bold promo ad — 20% off first order",
-              "Lifestyle ad — morning routine vibes",
+              "Lifestyle ad — cozy morning routine vibes",
               "Protein-focused — gym & fitness angle",
-              "Family-friendly breakfast ad",
+              "Split layout — product benefits vs competitors",
             ].map((idea) => (
               <button
                 key={idea}
@@ -737,55 +681,19 @@ export default function Home() {
   return (
     <div>
       <button
-        onClick={() => {
-          setCopyVariations([]);
-          setSelectedCopy(null);
-        }}
+        onClick={goBackToInput}
         className="flex items-center gap-1 text-sm text-chocolate/40 hover:text-chocolate mb-6 transition-colors"
       >
         &larr; Back to {flow === "reference" ? "Reference" : "Description"}
       </button>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr,340px] gap-8">
-        {/* Left: Preview */}
+        {/* Left: Ad Preview */}
         <div>
           <h2 className="font-heading text-2xl text-chocolate mb-4">
             Your Ad
           </h2>
 
-          {/* Copy variations */}
-          {copyVariations.length > 1 && (
-            <div className="mb-4">
-              <p className="text-xs font-medium text-chocolate/40 mb-2">
-                Copy variations — pick one:
-              </p>
-              <div className="flex gap-2">
-                {copyVariations.map((v, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setSelectedCopy(i);
-                      setCustomCopy(v);
-                    }}
-                    className={`flex-1 text-left p-3 rounded-lg border transition-colors ${
-                      selectedCopy === i
-                        ? "border-peach bg-peach/5"
-                        : "border-chocolate/10 hover:border-chocolate/20"
-                    }`}
-                  >
-                    <p className="text-xs font-medium text-chocolate truncate">
-                      {v.headline}
-                    </p>
-                    <p className="text-xs text-chocolate/40 truncate mt-0.5">
-                      {v.subheadline}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Ad preview */}
           <div
             ref={adPreviewRef}
             className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
@@ -810,7 +718,7 @@ export default function Home() {
 
         {/* Right: Controls */}
         <div className="space-y-4">
-          {/* Export buttons */}
+          {/* Export */}
           <button
             onClick={handleExport}
             disabled={exporting}
@@ -826,68 +734,72 @@ export default function Home() {
             {saving ? "Saving..." : "Save to Gallery"}
           </button>
 
-          {/* Edit copy */}
+          {/* Regenerate */}
+          <button
+            onClick={handleRegenerate}
+            disabled={generating}
+            className="w-full py-2.5 bg-sky/10 text-sky rounded-xl font-medium hover:bg-sky/20 transition-colors disabled:opacity-50"
+          >
+            {generating ? (
+              <span className="flex items-center justify-center gap-2">
+                <svg
+                  className="animate-spin w-4 h-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    className="opacity-25"
+                  />
+                  <path
+                    d="M4 12a8 8 0 018-8"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    className="opacity-75"
+                  />
+                </svg>
+                Regenerating...
+              </span>
+            ) : (
+              "Regenerate"
+            )}
+          </button>
+
+          {/* Edit Copy — dynamic fields */}
           <div className="pt-3 border-t border-chocolate/10">
             <p className="text-xs font-medium text-chocolate/40 mb-2">
               Edit Copy
             </p>
-            <div className="space-y-2">
-              <input
-                type="text"
-                value={customCopy.headline}
-                onChange={(e) =>
-                  setCustomCopy({ ...customCopy, headline: e.target.value })
-                }
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
-                placeholder="Headline"
-              />
-              <input
-                type="text"
-                value={customCopy.subheadline}
-                onChange={(e) =>
-                  setCustomCopy({ ...customCopy, subheadline: e.target.value })
-                }
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
-                placeholder="Subheadline"
-              />
-              <textarea
-                value={customCopy.body}
-                onChange={(e) =>
-                  setCustomCopy({ ...customCopy, body: e.target.value })
-                }
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate h-16 resize-none"
-                placeholder="Body (optional)"
-              />
-              <input
-                type="text"
-                value={customCopy.cta}
-                onChange={(e) =>
-                  setCustomCopy({ ...customCopy, cta: e.target.value })
-                }
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
-                placeholder="CTA"
-              />
-            </div>
-          </div>
-
-          {/* Template */}
-          <div className="pt-3 border-t border-chocolate/10">
-            <p className="text-xs font-medium text-chocolate/40 mb-2">
-              Template
-            </p>
-            <div className="grid grid-cols-2 gap-1.5">
-              {templates.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => setTemplateId(t.id)}
-                  className={`p-2 rounded-lg border text-left transition-colors ${
-                    templateId === t.id
-                      ? "border-peach bg-peach/5"
-                      : "border-chocolate/10 hover:border-chocolate/20"
-                  }`}
-                >
-                  <p className="text-xs font-medium text-chocolate">{t.name}</p>
-                </button>
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {Object.entries(fields).map(([key, value]) => (
+                <div key={key}>
+                  <label className="block text-xs text-chocolate/40 mb-0.5">
+                    {formatFieldName(key)}
+                  </label>
+                  {(value || "").length > 50 ? (
+                    <textarea
+                      value={value}
+                      onChange={(e) =>
+                        setFields({ ...fields, [key]: e.target.value })
+                      }
+                      className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate h-16 resize-none"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={value}
+                      onChange={(e) =>
+                        setFields({ ...fields, [key]: e.target.value })
+                      }
+                      className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
+                    />
+                  )}
+                </div>
               ))}
             </div>
           </div>
@@ -903,7 +815,7 @@ export default function Home() {
                 <input
                   type="color"
                   value={backgroundColor}
-                  onChange={(e) => setBackgroundColor(e.target.value)}
+                  onChange={(e) => handleColorChange("bg", e.target.value)}
                   className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
                 />
               </div>
@@ -914,7 +826,7 @@ export default function Home() {
                 <input
                   type="color"
                   value={textColor}
-                  onChange={(e) => setTextColor(e.target.value)}
+                  onChange={(e) => handleColorChange("text", e.target.value)}
                   className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
                 />
               </div>
@@ -925,19 +837,19 @@ export default function Home() {
                 <input
                   type="color"
                   value={accentColor}
-                  onChange={(e) => setAccentColor(e.target.value)}
+                  onChange={(e) => handleColorChange("accent", e.target.value)}
                   className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
                 />
               </div>
             </div>
-            <div className="flex gap-1 mt-2">
+            <div className="flex gap-1 mt-2 flex-wrap">
               {Object.values({
                 ...brandContext.colors.primary,
                 ...brandContext.colors.pairings,
               }).map((hex) => (
                 <button
                   key={hex}
-                  onClick={() => setAccentColor(hex)}
+                  onClick={() => handleColorChange("accent", hex)}
                   className="w-5 h-5 rounded border border-chocolate/10"
                   style={{ backgroundColor: hex }}
                   title={hex}
@@ -945,149 +857,6 @@ export default function Home() {
               ))}
             </div>
           </div>
-
-          {/* Ad Size */}
-          <div className="pt-3 border-t border-chocolate/10">
-            <p className="text-xs font-medium text-chocolate/40 mb-2">
-              Ad Size
-            </p>
-            <select
-              value={adSizeId}
-              onChange={(e) => setAdSizeId(e.target.value)}
-              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
-            >
-              {adSizes.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.width}x{s.height})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Brand Assets */}
-          {brandAssets.length > 0 && (
-            <div className="pt-3 border-t border-chocolate/10">
-              <p className="text-xs font-medium text-chocolate/40 mb-2">
-                Brand Assets
-              </p>
-
-              {/* Product Image */}
-              <div className="mb-2">
-                <p className="text-xs text-chocolate/30 mb-1">Product</p>
-                <div className="flex gap-1.5 overflow-x-auto pb-1">
-                  <button
-                    onClick={() => setSelectedProductImage(null)}
-                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
-                      !selectedProductImage
-                        ? "border-peach"
-                        : "border-chocolate/10"
-                    }`}
-                  >
-                    &mdash;
-                  </button>
-                  {brandAssets
-                    .filter(
-                      (a) =>
-                        a.category === "product_photo" ||
-                        a.category === "packaging"
-                    )
-                    .map((a) => (
-                      <button
-                        key={a.id}
-                        onClick={() => setSelectedProductImage(a.public_url)}
-                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
-                          selectedProductImage === a.public_url
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        <img
-                          src={a.public_url}
-                          alt={a.name}
-                          className="w-full h-full object-cover"
-                        />
-                      </button>
-                    ))}
-                </div>
-              </div>
-
-              {/* Background */}
-              <div className="mb-2">
-                <p className="text-xs text-chocolate/30 mb-1">Background</p>
-                <div className="flex gap-1.5 overflow-x-auto pb-1">
-                  <button
-                    onClick={() => setSelectedBackground(null)}
-                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
-                      !selectedBackground
-                        ? "border-peach"
-                        : "border-chocolate/10"
-                    }`}
-                  >
-                    &mdash;
-                  </button>
-                  {brandAssets
-                    .filter(
-                      (a) =>
-                        a.category === "lifestyle" ||
-                        a.category === "background"
-                    )
-                    .map((a) => (
-                      <button
-                        key={a.id}
-                        onClick={() => setSelectedBackground(a.public_url)}
-                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
-                          selectedBackground === a.public_url
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        <img
-                          src={a.public_url}
-                          alt={a.name}
-                          className="w-full h-full object-cover"
-                        />
-                      </button>
-                    ))}
-                </div>
-              </div>
-
-              {/* Logo */}
-              <div>
-                <p className="text-xs text-chocolate/30 mb-1">Logo</p>
-                <div className="flex gap-1.5 overflow-x-auto pb-1">
-                  <button
-                    onClick={() => setSelectedLogo(null)}
-                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
-                      !selectedLogo ? "border-peach" : "border-chocolate/10"
-                    }`}
-                  >
-                    &mdash;
-                  </button>
-                  {brandAssets
-                    .filter(
-                      (a) => a.category === "logo" || a.category === "mascot"
-                    )
-                    .map((a) => (
-                      <button
-                        key={a.id}
-                        onClick={() => setSelectedLogo(a.public_url)}
-                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
-                          selectedLogo === a.public_url
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        <img
-                          src={a.public_url}
-                          alt={a.name}
-                          className="w-full h-full object-cover"
-                        />
-                      </button>
-                    ))}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Start Over */}
           <button
