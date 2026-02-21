@@ -14,10 +14,80 @@ const CATEGORIES = [
   { id: "other", label: "Other" },
 ];
 
+// Compress images that are too large for Vercel's 4.5MB limit
+async function compressImage(file, maxBytes = 3 * 1024 * 1024) {
+  // Skip compression for SVGs or small files
+  if (file.type === "image/svg+xml" || file.size <= maxBytes) {
+    return file;
+  }
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+
+        // Scale down if dimensions are huge
+        const maxDim = 2048;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Try PNG first for transparency support, fall back to JPEG if still too large
+        canvas.toBlob(
+          (blob) => {
+            if (blob && blob.size <= maxBytes) {
+              resolve(
+                new File([blob], file.name.replace(/\.\w+$/, ".png"), {
+                  type: "image/png",
+                })
+              );
+            } else {
+              // Compress as JPEG
+              canvas.toBlob(
+                (jpegBlob) => {
+                  if (jpegBlob) {
+                    resolve(
+                      new File(
+                        [jpegBlob],
+                        file.name.replace(/\.\w+$/, ".jpg"),
+                        { type: "image/jpeg" }
+                      )
+                    );
+                  } else {
+                    reject(new Error("Image compression failed"));
+                  }
+                },
+                "image/jpeg",
+                0.85
+              );
+            }
+          },
+          "image/png",
+          1
+        );
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error("Could not load image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 export default function BrandKitPage() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
   const [uploadError, setUploadError] = useState(null);
   const [uploadSuccess, setUploadSuccess] = useState(null);
   const [filterCategory, setFilterCategory] = useState("all");
@@ -61,16 +131,43 @@ export default function BrandKitPage() {
       let successCount = 0;
       let errors = [];
 
-      for (const file of acceptedFiles) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("category", uploadCategory);
-        formData.append("name", file.name.replace(/\.[^/.]+$/, ""));
+      for (let i = 0; i < acceptedFiles.length; i++) {
+        const file = acceptedFiles[i];
+        setUploadProgress(
+          `Uploading ${i + 1}/${acceptedFiles.length}: ${file.name}...`
+        );
+
         try {
+          // Compress if needed
+          let processedFile = file;
+          if (file.size > 3 * 1024 * 1024) {
+            setUploadProgress(
+              `Compressing ${i + 1}/${acceptedFiles.length}: ${file.name}...`
+            );
+            processedFile = await compressImage(file);
+          }
+
+          const formData = new FormData();
+          formData.append("file", processedFile);
+          formData.append("category", uploadCategory);
+          formData.append("name", file.name.replace(/\.[^/.]+$/, ""));
+
           const res = await fetch("/api/brand-assets", {
             method: "POST",
             body: formData,
           });
+
+          // Handle non-JSON responses (like "Request Entity Too Large")
+          const contentType = res.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+            const text = await res.text();
+            throw new Error(
+              res.status === 413
+                ? `File too large even after compression (${(processedFile.size / 1024 / 1024).toFixed(1)}MB). Try a smaller image.`
+                : `Server error: ${text.slice(0, 100)}`
+            );
+          }
+
           const data = await res.json();
           if (!res.ok) {
             errors.push(`${file.name}: ${data.error || "Upload failed"}`);
@@ -83,6 +180,7 @@ export default function BrandKitPage() {
       }
 
       setUploading(false);
+      setUploadProgress("");
 
       if (errors.length > 0) {
         setUploadError(errors.join("\n"));
@@ -182,7 +280,12 @@ export default function BrandKitPage() {
         >
           <input {...getInputProps()} />
           {uploading ? (
-            <p className="text-peach font-medium">Uploading...</p>
+            <div>
+              <p className="text-peach font-medium">{uploadProgress || "Uploading..."}</p>
+              <div className="mt-2 w-48 h-1.5 bg-chocolate/10 rounded-full mx-auto overflow-hidden">
+                <div className="h-full bg-peach rounded-full animate-pulse" style={{ width: "60%" }} />
+              </div>
+            </div>
           ) : isDragActive ? (
             <p className="text-peach font-medium">Drop files here</p>
           ) : (
@@ -191,7 +294,7 @@ export default function BrandKitPage() {
                 Drag & drop images here, or click to browse
               </p>
               <p className="text-chocolate/40 text-sm mt-1">
-                PNG, JPG, WebP, SVG — max 10MB
+                PNG, JPG, WebP, SVG — large files will be compressed automatically
               </p>
             </div>
           )}
