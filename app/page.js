@@ -24,6 +24,9 @@ export default function Home() {
   const [referenceImage, setReferenceImage] = useState(null);
   const [referencePreview, setReferencePreview] = useState(null);
 
+  // Reference flow — optional direction
+  const [referenceNotes, setReferenceNotes] = useState("");
+
   // Scratch flow
   const [adDescription, setAdDescription] = useState("");
 
@@ -133,7 +136,7 @@ export default function Home() {
           channel,
           tone: "playful, warm, energetic",
           referenceAnalysis: result,
-          userPrompt: `Recreate this ad's copy style for ChiChi Foods. The reference ad style: ${result.styleNotes || ""}. Match the energy and format of the original.`,
+          userPrompt: `Recreate this ad's copy style for ChiChi Foods. The reference ad style: ${result.styleNotes || ""}. Match the energy and format of the original.${referenceNotes ? ` Additional direction from the user: ${referenceNotes}` : ""}`,
         }),
       });
       const copyData = await copyRes.json();
@@ -218,6 +221,7 @@ export default function Home() {
     setFlow(null);
     setReferenceImage(null);
     setReferencePreview(null);
+    setReferenceNotes("");
     setAdDescription("");
     setAnalysis(null);
     setCopyVariations([]);
@@ -521,6 +525,20 @@ export default function Home() {
               <option value="wholesale">Wholesale</option>
             </select>
           </div>
+        </div>
+
+        {/* Optional direction */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-chocolate mb-1.5">
+            Any direction for the ChiChi version?{" "}
+            <span className="font-normal text-chocolate/40">(optional)</span>
+          </label>
+          <textarea
+            value={referenceNotes}
+            onChange={(e) => setReferenceNotes(e.target.value)}
+            placeholder="e.g., Make it about our Apple Cinnamon flavor, keep the same bold layout but use our peach and vanilla colors, add a promo code..."
+            className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-20 resize-none placeholder:text-chocolate/30"
+          />
         </div>
 
         {error && (
