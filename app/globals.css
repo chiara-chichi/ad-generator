@@ -1,26 +1,75 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fffbec;
+  --foreground: #4b1c10;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  /* ChiChi Brand Colors */
+  --color-peach: #f0615a;
+  --color-vanilla: #fffbec;
+  --color-chocolate: #4b1c10;
+  --color-sky: #5dc5c6;
+  --color-teal: #249b96;
+  --color-dragon-fruit: #9c2658;
+  --color-plum: #4f1329;
+  --color-cinnamon: #96402b;
+  --color-strawberry: #de2740;
+
+  --font-sans: "Questa Sans", system-ui, sans-serif;
+  --font-heading: "Decoy", "Questa Slab", serif;
+  --font-accent: "Tomarik Extrovert", serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@font-face {
+  font-family: "Decoy";
+  src: url("/fonts/Decoy.woff2") format("woff2"),
+       url("/fonts/Decoy.woff") format("woff"),
+       url("/fonts/Decoy.otf") format("opentype"),
+       url("/fonts/Decoy.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Questa Sans";
+  src: url("/fonts/QuestaSans.woff2") format("woff2"),
+       url("/fonts/QuestaSans.woff") format("woff"),
+       url("/fonts/QuestaSans.otf") format("opentype"),
+       url("/fonts/QuestaSans.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Questa Slab";
+  src: url("/fonts/QuestaSlab.woff2") format("woff2"),
+       url("/fonts/QuestaSlab.woff") format("woff"),
+       url("/fonts/QuestaSlab.otf") format("opentype"),
+       url("/fonts/QuestaSlab.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Tomarik Extrovert";
+  src: url("/fonts/TomarikExtrovert.woff2") format("woff2"),
+       url("/fonts/TomarikExtrovert.woff") format("woff"),
+       url("/fonts/TomarikExtrovert.otf") format("opentype"),
+       url("/fonts/TomarikExtrovert.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }
