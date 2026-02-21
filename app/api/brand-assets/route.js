@@ -108,6 +108,46 @@ export async function POST(request) {
   }
 }
 
+// Update asset name and/or category
+export async function PATCH(request) {
+  try {
+    const supabase = getSupabase();
+    if (!supabase) {
+      return NextResponse.json({ error: "Supabase not configured" }, { status: 503 });
+    }
+    const { id, name, category } = await request.json();
+
+    if (!id) {
+      return NextResponse.json({ error: "No asset ID provided" }, { status: 400 });
+    }
+
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (category !== undefined) updates.category = category;
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+      .from("brand_assets")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return NextResponse.json({ asset: data });
+  } catch (error) {
+    console.error("Update asset error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to update asset" },
+      { status: 500 }
+    );
+  }
+}
+
 export async function DELETE(request) {
   try {
     const supabase = getSupabase();

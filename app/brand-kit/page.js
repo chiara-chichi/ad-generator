@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useDropzone } from "react-dropzone";
 import { brandContext } from "@/lib/brand-context";
 
@@ -13,6 +13,19 @@ const CATEGORIES = [
   { id: "background", label: "Backgrounds" },
   { id: "other", label: "Other" },
 ];
+
+/**
+ * Clean up a filename for use as the asset name.
+ * Strips the extension, then removes common junk suffixes like
+ * " (1)", "-min", "_min", trailing number-only segments, etc.
+ */
+function cleanFileName(rawName) {
+  let name = rawName.replace(/\.[^/.]+$/, ""); // strip extension
+  name = name.replace(/\s*\(\d+\)\s*$/, "");   // " (1)", " (2)" etc.
+  name = name.replace(/[-_]min$/i, "");          // "-min", "_min"
+  name = name.replace(/[-_ ]\d+$/, "");          // trailing "-123", "_45"
+  return name.trim() || rawName;
+}
 
 // Compress images that are too large for Vercel's 4.5MB limit
 async function compressImage(file, maxBytes = 3 * 1024 * 1024) {
@@ -93,6 +106,14 @@ export default function BrandKitPage() {
   const [filterCategory, setFilterCategory] = useState("all");
   const [uploadCategory, setUploadCategory] = useState("product_photo");
 
+  // Inline-rename state: which asset id is currently being edited
+  const [editingNameId, setEditingNameId] = useState(null);
+  const [editingNameValue, setEditingNameValue] = useState("");
+  const renameInputRef = useRef(null);
+
+  // Track broken images so we can show a placeholder
+  const [brokenImages, setBrokenImages] = useState(new Set());
+
   const fetchAssets = useCallback(async () => {
     try {
       const url =
@@ -113,6 +134,70 @@ export default function BrandKitPage() {
     fetchAssets();
   }, [fetchAssets]);
 
+  // Focus the rename input whenever editingNameId changes
+  useEffect(() => {
+    if (editingNameId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [editingNameId]);
+
+  // ------- Rename handler -------
+  const handleRename = async (asset) => {
+    const newName = editingNameValue.trim();
+    setEditingNameId(null);
+
+    if (!newName || newName === asset.name) return;
+
+    // Optimistic update
+    setAssets((prev) =>
+      prev.map((a) => (a.id === asset.id ? { ...a, name: newName } : a))
+    );
+
+    try {
+      const res = await fetch("/api/brand-assets", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: asset.id, name: newName }),
+      });
+      if (!res.ok) {
+        console.error("Rename failed, reverting");
+        fetchAssets();
+      }
+    } catch (err) {
+      console.error("Rename failed:", err);
+      fetchAssets();
+    }
+  };
+
+  // ------- Re-categorize handler -------
+  const handleRecategorize = async (asset, newCategory) => {
+    if (newCategory === asset.category) return;
+
+    // Optimistic update
+    setAssets((prev) =>
+      prev.map((a) =>
+        a.id === asset.id ? { ...a, category: newCategory } : a
+      )
+    );
+
+    try {
+      const res = await fetch("/api/brand-assets", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: asset.id, category: newCategory }),
+      });
+      if (!res.ok) {
+        console.error("Re-categorize failed, reverting");
+        fetchAssets();
+      }
+    } catch (err) {
+      console.error("Re-categorize failed:", err);
+      fetchAssets();
+    }
+  };
+
+  // ------- Upload via drop -------
   const onDrop = useCallback(
     async (acceptedFiles, rejectedFiles) => {
       setUploadError(null);
@@ -150,7 +235,7 @@ export default function BrandKitPage() {
           const formData = new FormData();
           formData.append("file", processedFile);
           formData.append("category", uploadCategory);
-          formData.append("name", file.name.replace(/\.[^/.]+$/, ""));
+          formData.append("name", cleanFileName(file.name));
 
           const res = await fetch("/api/brand-assets", {
             method: "POST",
@@ -218,6 +303,14 @@ export default function BrandKitPage() {
     } catch (err) {
       console.error("Delete failed:", err);
     }
+  };
+
+  const handleImageError = (assetId) => {
+    setBrokenImages((prev) => {
+      const next = new Set(prev);
+      next.add(assetId);
+      return next;
+    });
   };
 
   return (
@@ -355,21 +448,89 @@ export default function BrandKitPage() {
               key={asset.id}
               className="group relative bg-white rounded-xl overflow-hidden shadow-sm border border-chocolate/5 hover:shadow-md transition-shadow"
             >
+              {/* Image / Broken-image fallback */}
               <div className="aspect-square bg-chocolate/5 flex items-center justify-center overflow-hidden">
-                <img
-                  src={asset.public_url}
-                  alt={asset.name}
-                  className="w-full h-full object-cover"
-                />
+                {brokenImages.has(asset.id) ? (
+                  <div className="flex flex-col items-center justify-center text-chocolate/30 px-2">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="w-8 h-8 mb-1"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.5}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z"
+                      />
+                    </svg>
+                    <span className="text-xs text-center leading-tight">
+                      Image not found
+                    </span>
+                  </div>
+                ) : (
+                  <img
+                    src={asset.public_url}
+                    alt={asset.name}
+                    className="w-full h-full object-cover"
+                    onError={() => handleImageError(asset.id)}
+                  />
+                )}
               </div>
+
+              {/* Info area */}
               <div className="p-2">
-                <p className="text-xs font-medium text-chocolate truncate">
-                  {asset.name}
-                </p>
-                <p className="text-xs text-chocolate/40 capitalize">
-                  {asset.category?.replace("_", " ")}
-                </p>
+                {/* Editable name */}
+                {editingNameId === asset.id ? (
+                  <input
+                    ref={renameInputRef}
+                    type="text"
+                    value={editingNameValue}
+                    onChange={(e) => setEditingNameValue(e.target.value)}
+                    onBlur={() => handleRename(asset)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRename(asset);
+                      if (e.key === "Escape") setEditingNameId(null);
+                    }}
+                    className="w-full text-xs font-medium text-chocolate bg-vanilla border border-chocolate/20 rounded px-1 py-0.5 outline-none focus:border-peach"
+                  />
+                ) : (
+                  <p
+                    className="text-xs font-medium text-chocolate truncate cursor-pointer hover:text-peach transition-colors"
+                    title="Click to rename"
+                    onClick={() => {
+                      setEditingNameId(asset.id);
+                      setEditingNameValue(asset.name);
+                    }}
+                  >
+                    {asset.name}
+                  </p>
+                )}
+
+                {/* Category dropdown (re-categorize) */}
+                <select
+                  value={asset.category || "other"}
+                  onChange={(e) => handleRecategorize(asset, e.target.value)}
+                  className="mt-0.5 w-full text-xs text-chocolate/50 bg-transparent border-none outline-none cursor-pointer hover:text-chocolate transition-colors p-0 appearance-none"
+                  style={{
+                    backgroundImage:
+                      "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath fill='%23999' d='M0 2l4 4 4-4z'/%3E%3C/svg%3E\")",
+                    backgroundRepeat: "no-repeat",
+                    backgroundPosition: "right 0 center",
+                    paddingRight: "12px",
+                  }}
+                >
+                  {CATEGORIES.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              {/* Delete button */}
               <button
                 onClick={() => handleDelete(asset)}
                 className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
