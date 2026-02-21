@@ -18,6 +18,8 @@ export default function BrandKitPage() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [uploadSuccess, setUploadSuccess] = useState(null);
   const [filterCategory, setFilterCategory] = useState("all");
   const [uploadCategory, setUploadCategory] = useState("product_photo");
 
@@ -42,20 +44,56 @@ export default function BrandKitPage() {
   }, [fetchAssets]);
 
   const onDrop = useCallback(
-    async (acceptedFiles) => {
+    async (acceptedFiles, rejectedFiles) => {
+      setUploadError(null);
+      setUploadSuccess(null);
+
+      if (rejectedFiles?.length > 0) {
+        setUploadError(
+          `Some files were rejected: ${rejectedFiles.map((f) => f.file.name).join(", ")}. Make sure they are images under 10MB.`
+        );
+        return;
+      }
+
+      if (acceptedFiles.length === 0) return;
+
       setUploading(true);
+      let successCount = 0;
+      let errors = [];
+
       for (const file of acceptedFiles) {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("category", uploadCategory);
         formData.append("name", file.name.replace(/\.[^/.]+$/, ""));
         try {
-          await fetch("/api/brand-assets", { method: "POST", body: formData });
+          const res = await fetch("/api/brand-assets", {
+            method: "POST",
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            errors.push(`${file.name}: ${data.error || "Upload failed"}`);
+          } else {
+            successCount++;
+          }
         } catch (err) {
-          console.error("Upload failed:", err);
+          errors.push(`${file.name}: ${err.message}`);
         }
       }
+
       setUploading(false);
+
+      if (errors.length > 0) {
+        setUploadError(errors.join("\n"));
+      }
+      if (successCount > 0) {
+        setUploadSuccess(
+          `${successCount} file${successCount > 1 ? "s" : ""} uploaded!`
+        );
+        setTimeout(() => setUploadSuccess(null), 3000);
+      }
+
       fetchAssets();
     },
     [uploadCategory, fetchAssets]
@@ -73,7 +111,10 @@ export default function BrandKitPage() {
       await fetch("/api/brand-assets", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: asset.id, storagePath: asset.storage_path }),
+        body: JSON.stringify({
+          id: asset.id,
+          storagePath: asset.storage_path,
+        }),
       });
       fetchAssets();
     } catch (err) {
@@ -116,7 +157,9 @@ export default function BrandKitPage() {
       {/* Upload Zone */}
       <div className="mb-8">
         <div className="flex items-center gap-4 mb-3">
-          <h2 className="font-heading text-xl text-chocolate">Upload Assets</h2>
+          <h2 className="font-heading text-xl text-chocolate">
+            Upload Assets
+          </h2>
           <select
             value={uploadCategory}
             onChange={(e) => setUploadCategory(e.target.value)}
@@ -139,7 +182,7 @@ export default function BrandKitPage() {
         >
           <input {...getInputProps()} />
           {uploading ? (
-            <p className="text-chocolate/60">Uploading...</p>
+            <p className="text-peach font-medium">Uploading...</p>
           ) : isDragActive ? (
             <p className="text-peach font-medium">Drop files here</p>
           ) : (
@@ -153,6 +196,16 @@ export default function BrandKitPage() {
             </div>
           )}
         </div>
+        {uploadError && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm whitespace-pre-wrap">
+            {uploadError}
+          </div>
+        )}
+        {uploadSuccess && (
+          <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+            {uploadSuccess}
+          </div>
+        )}
       </div>
 
       {/* Filter */}

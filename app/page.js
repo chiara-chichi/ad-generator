@@ -9,37 +9,33 @@ import { adSizes, getAdSize } from "@/lib/ad-sizes";
 import { brandContext } from "@/lib/brand-context";
 import { supabase } from "@/lib/supabase";
 
-const STEPS = [
-  { id: 1, label: "Reference" },
-  { id: 2, label: "Configure" },
-  { id: 3, label: "Copy" },
-  { id: 4, label: "Preview & Export" },
-];
-
 const FLAVORS = [
   "All / General",
   ...new Set(brandContext.products.map((p) => p.flavor)),
 ];
 
 export default function Home() {
-  const [step, setStep] = useState(1);
+  // Flow state: null = home, "reference" = copy reference, "scratch" = create from scratch
+  const [flow, setFlow] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Reference flow
   const [referenceImage, setReferenceImage] = useState(null);
   const [referencePreview, setReferencePreview] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
-  const [analyzing, setAnalyzing] = useState(false);
 
+  // Scratch flow
+  const [adDescription, setAdDescription] = useState("");
+
+  // Shared settings
   const [adSizeId, setAdSizeId] = useState("instagram-square");
-  const [templateId, setTemplateId] = useState("hero-product");
   const [flavor, setFlavor] = useState("All / General");
   const [channel, setChannel] = useState("social");
 
-  const [brandAssets, setBrandAssets] = useState([]);
-  const [selectedProductImage, setSelectedProductImage] = useState(null);
-  const [selectedBackground, setSelectedBackground] = useState(null);
-  const [selectedLogo, setSelectedLogo] = useState(null);
-
+  // Generated ad state
+  const [analysis, setAnalysis] = useState(null);
+  const [templateId, setTemplateId] = useState("hero-product");
   const [copyVariations, setCopyVariations] = useState([]);
-  const [generatingCopy, setGeneratingCopy] = useState(false);
   const [selectedCopy, setSelectedCopy] = useState(null);
   const [customCopy, setCustomCopy] = useState({
     headline: "",
@@ -47,15 +43,21 @@ export default function Home() {
     body: "",
     cta: "",
   });
-  const [userPrompt, setUserPrompt] = useState("");
 
+  // Visual customization
   const [backgroundColor, setBackgroundColor] = useState("#fffbec");
   const [textColor, setTextColor] = useState("#4b1c10");
   const [accentColor, setAccentColor] = useState("#f0615a");
 
-  const [saving, setSaving] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  // Brand assets
+  const [brandAssets, setBrandAssets] = useState([]);
+  const [selectedProductImage, setSelectedProductImage] = useState(null);
+  const [selectedBackground, setSelectedBackground] = useState(null);
+  const [selectedLogo, setSelectedLogo] = useState(null);
 
+  // Export
+  const [exporting, setExporting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const adPreviewRef = useRef(null);
 
   // Fetch brand assets on mount
@@ -66,7 +68,7 @@ export default function Home() {
       .catch(console.error);
   }, []);
 
-  // Handle reference image upload
+  // Reference image dropzone
   const onDropReference = useCallback((files) => {
     const file = files[0];
     if (!file) return;
@@ -83,38 +85,46 @@ export default function Home() {
     maxSize: 10 * 1024 * 1024,
   });
 
-  // Analyze reference image
-  async function handleAnalyze() {
+  // Flow 1: Copy Reference — analyze + generate copy in one go
+  async function handleRecreate() {
     if (!referencePreview) return;
-    setAnalyzing(true);
+    setGenerating(true);
+    setError(null);
+
     try {
+      // Step 1: Analyze the reference image
       const base64 = referencePreview.split(",")[1];
       const mediaType = referenceImage.type || "image/png";
-      const res = await fetch("/api/analyze", {
+      const analyzeRes = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: base64, mediaType }),
       });
-      const data = await res.json();
-      if (data.analysis) {
-        setAnalysis(data.analysis);
-        if (data.analysis.suggestedTemplate) {
-          setTemplateId(data.analysis.suggestedTemplate);
+      const analyzeData = await analyzeRes.json();
+
+      if (!analyzeRes.ok)
+        throw new Error(analyzeData.error || "Analysis failed");
+
+      const result = analyzeData.analysis;
+      setAnalysis(result);
+
+      // Set template from analysis
+      if (result.suggestedTemplate) {
+        setTemplateId(result.suggestedTemplate);
+      }
+
+      // Map colors from analysis to brand-adjacent colors
+      if (result.colorPalette?.length >= 2) {
+        setBackgroundColor(result.colorPalette[0] || "#fffbec");
+        setTextColor(result.colorPalette[1] || "#4b1c10");
+        if (result.colorPalette[2]) {
+          setAccentColor(result.colorPalette[2]);
         }
       }
-    } catch (err) {
-      console.error("Analysis failed:", err);
-    } finally {
-      setAnalyzing(false);
-    }
-  }
 
-  // Generate copy
-  async function handleGenerateCopy() {
-    setGeneratingCopy(true);
-    try {
+      // Step 2: Generate copy based on the analysis
       const product = brandContext.products.find((p) => p.flavor === flavor);
-      const res = await fetch("/api/generate-copy", {
+      const copyRes = await fetch("/api/generate-copy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -122,21 +132,104 @@ export default function Home() {
           sku: product?.sku || null,
           channel,
           tone: "playful, warm, energetic",
-          userPrompt: userPrompt || null,
-          referenceAnalysis: analysis || null,
+          referenceAnalysis: result,
+          userPrompt: `Recreate this ad's copy style for ChiChi Foods. The reference ad style: ${result.styleNotes || ""}. Match the energy and format of the original.`,
         }),
       });
-      const data = await res.json();
-      if (data.variations) {
-        setCopyVariations(data.variations);
+      const copyData = await copyRes.json();
+
+      if (copyData.variations) {
+        setCopyVariations(copyData.variations);
         setSelectedCopy(0);
-        setCustomCopy(data.variations[0]);
+        setCustomCopy(copyData.variations[0]);
       }
     } catch (err) {
-      console.error("Copy generation failed:", err);
+      console.error("Recreate failed:", err);
+      setError(err.message || "Something went wrong. Please try again.");
     } finally {
-      setGeneratingCopy(false);
+      setGenerating(false);
     }
+  }
+
+  // Flow 2: Create from Scratch — generate everything from description
+  async function handleCreateFromScratch() {
+    if (!adDescription.trim()) return;
+    setGenerating(true);
+    setError(null);
+
+    try {
+      const product = brandContext.products.find((p) => p.flavor === flavor);
+      const copyRes = await fetch("/api/generate-copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          flavor: flavor === "All / General" ? null : flavor,
+          sku: product?.sku || null,
+          channel,
+          tone: "playful, warm, energetic",
+          userPrompt: adDescription,
+        }),
+      });
+      const copyData = await copyRes.json();
+
+      if (!copyRes.ok)
+        throw new Error(copyData.error || "Copy generation failed");
+
+      if (copyData.variations) {
+        setCopyVariations(copyData.variations);
+        setSelectedCopy(0);
+        setCustomCopy(copyData.variations[0]);
+      }
+
+      // Auto-pick template based on description keywords
+      const desc = adDescription.toLowerCase();
+      if (
+        desc.includes("lifestyle") ||
+        desc.includes("background") ||
+        desc.includes("photo")
+      ) {
+        setTemplateId("lifestyle-overlay");
+      } else if (
+        desc.includes("bold") ||
+        desc.includes("big text") ||
+        desc.includes("typography") ||
+        desc.includes("minimal")
+      ) {
+        setTemplateId("bold-typography");
+      } else if (
+        desc.includes("split") ||
+        desc.includes("side by side") ||
+        desc.includes("half")
+      ) {
+        setTemplateId("split-layout");
+      } else {
+        setTemplateId("hero-product");
+      }
+    } catch (err) {
+      console.error("Create failed:", err);
+      setError(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  // Reset to home
+  function resetFlow() {
+    setFlow(null);
+    setReferenceImage(null);
+    setReferencePreview(null);
+    setAdDescription("");
+    setAnalysis(null);
+    setCopyVariations([]);
+    setSelectedCopy(null);
+    setCustomCopy({ headline: "", subheadline: "", body: "", cta: "" });
+    setError(null);
+    setBackgroundColor("#fffbec");
+    setTextColor("#4b1c10");
+    setAccentColor("#f0615a");
+    setSelectedProductImage(null);
+    setSelectedBackground(null);
+    setSelectedLogo(null);
   }
 
   // Export as PNG
@@ -156,8 +249,14 @@ export default function Home() {
         skipAutoScale: true,
       });
 
-      const flavorSlug = flavor === "All / General" ? "general" : flavor.toLowerCase().replace(/\s+/g, "-");
-      saveAs(dataUrl, `chichi-${flavorSlug}-${size.width}x${size.height}.png`);
+      const flavorSlug =
+        flavor === "All / General"
+          ? "general"
+          : flavor.toLowerCase().replace(/\s+/g, "-");
+      saveAs(
+        dataUrl,
+        `chichi-${flavorSlug}-${size.width}x${size.height}.png`
+      );
     } catch (err) {
       console.error("Export failed:", err);
     } finally {
@@ -169,8 +268,13 @@ export default function Home() {
   async function handleSave() {
     setSaving(true);
     try {
+      if (!supabase) {
+        alert("Gallery saving requires Supabase to be configured.");
+        return;
+      }
+
       const size = getAdSize(adSizeId);
-      const { error } = await supabase.from("generated_ads").insert({
+      const { error: dbError } = await supabase.from("generated_ads").insert({
         name: customCopy.headline || "Untitled Ad",
         ad_size: `${size.width}x${size.height}`,
         template_id: templateId,
@@ -188,7 +292,7 @@ export default function Home() {
         flavor: flavor === "All / General" ? null : flavor,
         channel,
       });
-      if (error) throw error;
+      if (dbError) throw dbError;
       alert("Saved to gallery!");
     } catch (err) {
       console.error("Save failed:", err);
@@ -198,7 +302,7 @@ export default function Home() {
     }
   }
 
-  // Build template variables
+  // Build template variables + preview
   const size = getAdSize(adSizeId);
   const templateVars = {
     width: size.width,
@@ -219,501 +323,425 @@ export default function Home() {
 
   const currentTemplate = getTemplate(templateId);
   const adHtml = currentTemplate.render(templateVars);
-
-  // Preview scale
   const maxPreviewWidth = 500;
   const scale = Math.min(maxPreviewWidth / size.width, 1);
+  const hasGenerated = copyVariations.length > 0;
 
-  return (
-    <div>
-      {/* Step indicators */}
-      <div className="flex items-center gap-2 mb-8">
-        {STEPS.map((s) => (
-          <button
-            key={s.id}
-            onClick={() => setStep(s.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-              step === s.id
-                ? "bg-peach text-white"
-                : step > s.id
-                  ? "bg-peach/20 text-peach"
-                  : "bg-chocolate/5 text-chocolate/40"
-            }`}
-          >
-            <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
-              {s.id}
-            </span>
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Step 1: Reference Upload */}
-      {step === 1 && (
-        <div className="max-w-2xl">
-          <h2 className="font-heading text-2xl text-chocolate mb-2">
-            Upload a Reference Ad
-          </h2>
-          <p className="text-chocolate/60 mb-6">
-            Upload an ad you like and we&apos;ll analyze its layout and style to
-            recreate something similar for ChiChi.
+  // ==================== HOME ====================
+  if (!flow) {
+    return (
+      <div className="max-w-3xl mx-auto">
+        <div className="text-center mb-10">
+          <h1 className="font-heading text-4xl text-chocolate mb-3">
+            Create ChiChi Ads
+          </h1>
+          <p className="text-chocolate/60 text-lg">
+            Generate on-brand ads in seconds. Pick a flow to get started.
           </p>
+        </div>
 
-          <div
-            {...getRootProps()}
-            className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
-              isDragActive
-                ? "border-peach bg-peach/5"
-                : "border-chocolate/20 hover:border-peach/50"
-            }`}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          {/* Flow 1: Copy Reference */}
+          <button
+            onClick={() => setFlow("reference")}
+            className="group text-left p-8 bg-white rounded-2xl border-2 border-chocolate/10 hover:border-peach hover:shadow-lg transition-all"
           >
-            <input {...getInputProps()} />
-            {referencePreview ? (
+            <div className="w-14 h-14 bg-peach/10 rounded-xl flex items-center justify-center mb-4 group-hover:bg-peach/20 transition-colors">
+              <svg
+                className="w-7 h-7 text-peach"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.41a2.25 2.25 0 013.182 0l2.909 2.91m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"
+                />
+              </svg>
+            </div>
+            <h2 className="font-heading text-xl text-chocolate mb-2">
+              Copy a Reference Ad
+            </h2>
+            <p className="text-sm text-chocolate/50">
+              Upload an ad you like and we&apos;ll recreate it for ChiChi —
+              same layout, your brand.
+            </p>
+          </button>
+
+          {/* Flow 2: Create from Scratch */}
+          <button
+            onClick={() => setFlow("scratch")}
+            className="group text-left p-8 bg-white rounded-2xl border-2 border-chocolate/10 hover:border-sky hover:shadow-lg transition-all"
+          >
+            <div className="w-14 h-14 bg-sky/10 rounded-xl flex items-center justify-center mb-4 group-hover:bg-sky/20 transition-colors">
+              <svg
+                className="w-7 h-7 text-sky"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"
+                />
+              </svg>
+            </div>
+            <h2 className="font-heading text-xl text-chocolate mb-2">
+              Create from Scratch
+            </h2>
+            <p className="text-sm text-chocolate/50">
+              Describe your ad in plain English and AI will generate everything
+              — copy, layout, colors.
+            </p>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== FLOW 1: COPY REFERENCE ====================
+  if (flow === "reference" && !hasGenerated) {
+    return (
+      <div className="max-w-2xl">
+        <button
+          onClick={resetFlow}
+          className="flex items-center gap-1 text-sm text-chocolate/40 hover:text-chocolate mb-6 transition-colors"
+        >
+          &larr; Back
+        </button>
+
+        <h1 className="font-heading text-3xl text-chocolate mb-2">
+          Copy a Reference Ad
+        </h1>
+        <p className="text-chocolate/60 mb-8">
+          Upload an ad you like. We&apos;ll analyze its layout and style, then
+          recreate it for ChiChi.
+        </p>
+
+        {/* Upload zone */}
+        <div
+          {...getRootProps()}
+          className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors mb-6 ${
+            isDragActive
+              ? "border-peach bg-peach/5"
+              : referencePreview
+                ? "border-peach/30 bg-peach/5"
+                : "border-chocolate/20 hover:border-peach/50"
+          }`}
+        >
+          <input {...getInputProps()} />
+          {referencePreview ? (
+            <div>
               <img
                 src={referencePreview}
                 alt="Reference"
-                className="max-h-80 mx-auto rounded-lg"
+                className="max-h-72 mx-auto rounded-lg mb-3"
               />
-            ) : (
-              <div>
-                <p className="text-chocolate/80 font-medium text-lg">
-                  Drop your reference ad here
-                </p>
-                <p className="text-chocolate/40 text-sm mt-1">
-                  PNG, JPG, WebP — max 10MB
-                </p>
+              <p className="text-sm text-chocolate/40">
+                Click or drop to replace
+              </p>
+            </div>
+          ) : (
+            <div>
+              <div className="w-16 h-16 bg-peach/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg
+                  className="w-8 h-8 text-peach"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
+                  />
+                </svg>
               </div>
-            )}
-          </div>
-
-          <div className="flex gap-3 mt-6">
-            {referencePreview && (
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzing}
-                className="px-6 py-2.5 bg-peach text-white rounded-full font-medium hover:bg-peach/90 transition-colors disabled:opacity-50"
-              >
-                {analyzing ? "Analyzing..." : "Analyze Reference"}
-              </button>
-            )}
-            <button
-              onClick={() => setStep(2)}
-              className="px-6 py-2.5 bg-chocolate/5 text-chocolate rounded-full font-medium hover:bg-chocolate/10 transition-colors"
-            >
-              {referencePreview ? "Skip Analysis" : "Start from Scratch"}
-            </button>
-          </div>
-
-          {analysis && (
-            <div className="mt-6 p-4 bg-white rounded-xl border border-chocolate/10">
-              <h3 className="font-medium text-chocolate mb-2">
-                Analysis Result
-              </h3>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <p className="text-chocolate/40 text-xs mb-1">Layout</p>
-                  <p className="text-chocolate">
-                    {analysis.layout?.structure || "—"}
-                  </p>
-                  <p className="text-chocolate/60 text-xs mt-0.5">
-                    {analysis.layout?.description || ""}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-chocolate/40 text-xs mb-1">
-                    Suggested Template
-                  </p>
-                  <p className="text-chocolate capitalize">
-                    {analysis.suggestedTemplate?.replace(/-/g, " ") || "—"}
-                  </p>
-                </div>
-                <div className="col-span-2">
-                  <p className="text-chocolate/40 text-xs mb-1">Style Notes</p>
-                  <p className="text-chocolate/80 text-xs">
-                    {analysis.styleNotes || "—"}
-                  </p>
-                </div>
-                {analysis.colorPalette && (
-                  <div className="col-span-2">
-                    <p className="text-chocolate/40 text-xs mb-1">
-                      Color Palette
-                    </p>
-                    <div className="flex gap-1">
-                      {analysis.colorPalette.map((c, i) => (
-                        <div
-                          key={i}
-                          className="w-8 h-8 rounded-lg border border-chocolate/10"
-                          style={{ backgroundColor: c }}
-                          title={c}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={() => setStep(2)}
-                className="mt-4 px-6 py-2 bg-peach text-white rounded-full text-sm font-medium hover:bg-peach/90"
-              >
-                Continue with Analysis
-              </button>
+              <p className="text-chocolate/80 font-medium text-lg">
+                Drop your reference ad here
+              </p>
+              <p className="text-chocolate/40 text-sm mt-1">
+                PNG, JPG, WebP — max 10MB
+              </p>
             </div>
           )}
         </div>
-      )}
 
-      {/* Step 2: Configure */}
-      {step === 2 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Settings */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
           <div>
-            <h2 className="font-heading text-2xl text-chocolate mb-6">
-              Configure Your Ad
-            </h2>
-
-            {/* Ad Size */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Ad Size
-              </label>
-              <select
-                value={adSizeId}
-                onChange={(e) => setAdSizeId(e.target.value)}
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate"
-              >
-                {adSizes.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.width}x{s.height})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Template */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Template
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {templates.map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => setTemplateId(t.id)}
-                    className={`p-3 rounded-lg border text-left transition-colors ${
-                      templateId === t.id
-                        ? "border-peach bg-peach/5"
-                        : "border-chocolate/10 hover:border-chocolate/20"
-                    }`}
-                  >
-                    <p className="text-sm font-medium text-chocolate">
-                      {t.name}
-                    </p>
-                    <p className="text-xs text-chocolate/40 mt-0.5">
-                      {t.description}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Flavor */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Flavor / Product
-              </label>
-              <select
-                value={flavor}
-                onChange={(e) => setFlavor(e.target.value)}
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate"
-              >
-                {FLAVORS.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Channel */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Channel
-              </label>
-              <select
-                value={channel}
-                onChange={(e) => setChannel(e.target.value)}
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate"
-              >
-                <option value="social">Social Media</option>
-                <option value="dtc">DTC / Website</option>
-                <option value="retail">Retail</option>
-                <option value="wholesale">Wholesale</option>
-              </select>
-            </div>
-
-            {/* Colors */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Colors
-              </label>
-              <div className="flex gap-4">
-                <div>
-                  <label className="block text-xs text-chocolate/40 mb-1">
-                    Background
-                  </label>
-                  <input
-                    type="color"
-                    value={backgroundColor}
-                    onChange={(e) => setBackgroundColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer border border-chocolate/10"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-chocolate/40 mb-1">
-                    Text
-                  </label>
-                  <input
-                    type="color"
-                    value={textColor}
-                    onChange={(e) => setTextColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer border border-chocolate/10"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-chocolate/40 mb-1">
-                    Accent
-                  </label>
-                  <input
-                    type="color"
-                    value={accentColor}
-                    onChange={(e) => setAccentColor(e.target.value)}
-                    className="w-10 h-10 rounded cursor-pointer border border-chocolate/10"
-                  />
-                </div>
-              </div>
-              {/* Quick color swatches */}
-              <div className="flex gap-1 mt-2">
-                {Object.values({
-                  ...brandContext.colors.primary,
-                  ...brandContext.colors.pairings,
-                }).map((hex) => (
-                  <button
-                    key={hex}
-                    onClick={() => setAccentColor(hex)}
-                    className="w-6 h-6 rounded-md border border-chocolate/10"
-                    style={{ backgroundColor: hex }}
-                    title={hex}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {/* Brand Assets Selection */}
-            <div className="mb-5">
-              <label className="block text-sm font-medium text-chocolate mb-1.5">
-                Brand Assets
-              </label>
-              {brandAssets.length === 0 ? (
-                <p className="text-sm text-chocolate/40">
-                  No assets uploaded yet.{" "}
-                  <a href="/brand-kit" className="text-peach underline">
-                    Upload some
-                  </a>
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {/* Product Image */}
-                  <div>
-                    <p className="text-xs text-chocolate/50 mb-1">
-                      Product Image
-                    </p>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      <button
-                        onClick={() => setSelectedProductImage(null)}
-                        className={`shrink-0 w-14 h-14 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/30 ${
-                          !selectedProductImage
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        None
-                      </button>
-                      {brandAssets
-                        .filter(
-                          (a) =>
-                            a.category === "product_photo" ||
-                            a.category === "packaging"
-                        )
-                        .map((a) => (
-                          <button
-                            key={a.id}
-                            onClick={() =>
-                              setSelectedProductImage(a.public_url)
-                            }
-                            className={`shrink-0 w-14 h-14 rounded-lg border-2 overflow-hidden ${
-                              selectedProductImage === a.public_url
-                                ? "border-peach"
-                                : "border-chocolate/10"
-                            }`}
-                          >
-                            <img
-                              src={a.public_url}
-                              alt={a.name}
-                              className="w-full h-full object-cover"
-                            />
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-                  {/* Background */}
-                  <div>
-                    <p className="text-xs text-chocolate/50 mb-1">Background</p>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      <button
-                        onClick={() => setSelectedBackground(null)}
-                        className={`shrink-0 w-14 h-14 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/30 ${
-                          !selectedBackground
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        None
-                      </button>
-                      {brandAssets
-                        .filter(
-                          (a) =>
-                            a.category === "lifestyle" ||
-                            a.category === "background"
-                        )
-                        .map((a) => (
-                          <button
-                            key={a.id}
-                            onClick={() => setSelectedBackground(a.public_url)}
-                            className={`shrink-0 w-14 h-14 rounded-lg border-2 overflow-hidden ${
-                              selectedBackground === a.public_url
-                                ? "border-peach"
-                                : "border-chocolate/10"
-                            }`}
-                          >
-                            <img
-                              src={a.public_url}
-                              alt={a.name}
-                              className="w-full h-full object-cover"
-                            />
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-                  {/* Logo */}
-                  <div>
-                    <p className="text-xs text-chocolate/50 mb-1">Logo</p>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      <button
-                        onClick={() => setSelectedLogo(null)}
-                        className={`shrink-0 w-14 h-14 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/30 ${
-                          !selectedLogo
-                            ? "border-peach"
-                            : "border-chocolate/10"
-                        }`}
-                      >
-                        None
-                      </button>
-                      {brandAssets
-                        .filter(
-                          (a) =>
-                            a.category === "logo" || a.category === "mascot"
-                        )
-                        .map((a) => (
-                          <button
-                            key={a.id}
-                            onClick={() => setSelectedLogo(a.public_url)}
-                            className={`shrink-0 w-14 h-14 rounded-lg border-2 overflow-hidden ${
-                              selectedLogo === a.public_url
-                                ? "border-peach"
-                                : "border-chocolate/10"
-                            }`}
-                          >
-                            <img
-                              src={a.public_url}
-                              alt={a.name}
-                              className="w-full h-full object-cover"
-                            />
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={() => setStep(3)}
-              className="px-6 py-2.5 bg-peach text-white rounded-full font-medium hover:bg-peach/90 transition-colors"
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Ad Size
+            </label>
+            <select
+              value={adSizeId}
+              onChange={(e) => setAdSizeId(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
             >
-              Next: Generate Copy
-            </button>
+              {adSizes.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
           </div>
-
-          {/* Live Preview (small) */}
           <div>
-            <h3 className="text-sm font-medium text-chocolate/40 mb-2">
-              Preview
-            </h3>
-            <div
-              className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
-              style={{ width: size.width * scale, height: size.height * scale }}
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Flavor
+            </label>
+            <select
+              value={flavor}
+              onChange={(e) => setFlavor(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
             >
-              <div
-                style={{
-                  transform: `scale(${scale})`,
-                  transformOrigin: "top left",
-                  width: size.width,
-                  height: size.height,
-                }}
-                dangerouslySetInnerHTML={{ __html: adHtml }}
-              />
-            </div>
+              {FLAVORS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Channel
+            </label>
+            <select
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+            >
+              <option value="social">Social Media</option>
+              <option value="dtc">DTC / Website</option>
+              <option value="retail">Retail</option>
+              <option value="wholesale">Wholesale</option>
+            </select>
           </div>
         </div>
-      )}
 
-      {/* Step 3: Copy */}
-      {step === 3 && (
-        <div className="max-w-2xl">
-          <h2 className="font-heading text-2xl text-chocolate mb-2">
-            Ad Copy
-          </h2>
-          <p className="text-chocolate/60 mb-6">
-            Generate AI copy or write your own. The AI knows ChiChi&apos;s brand
-            voice.
-          </p>
-
-          {/* AI generation */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-chocolate mb-1.5">
-              Direction for AI (optional)
-            </label>
-            <textarea
-              value={userPrompt}
-              onChange={(e) => setUserPrompt(e.target.value)}
-              placeholder="e.g., Focus on the protein content, make it punchy and fun..."
-              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm h-20 resize-none"
-            />
-            <button
-              onClick={handleGenerateCopy}
-              disabled={generatingCopy}
-              className="mt-2 px-6 py-2.5 bg-peach text-white rounded-full font-medium hover:bg-peach/90 transition-colors disabled:opacity-50"
-            >
-              {generatingCopy ? "Generating..." : "Generate Copy with AI"}
-            </button>
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {error}
           </div>
+        )}
+
+        <button
+          onClick={handleRecreate}
+          disabled={!referencePreview || generating}
+          className="w-full py-3.5 bg-peach text-white rounded-xl font-medium text-lg hover:bg-peach/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {generating ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg
+                className="animate-spin w-5 h-5"
+                viewBox="0 0 24 24"
+                fill="none"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  className="opacity-25"
+                />
+                <path
+                  d="M4 12a8 8 0 018-8"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  className="opacity-75"
+                />
+              </svg>
+              Analyzing & generating...
+            </span>
+          ) : (
+            "Recreate for ChiChi"
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  // ==================== FLOW 2: CREATE FROM SCRATCH ====================
+  if (flow === "scratch" && !hasGenerated) {
+    return (
+      <div className="max-w-2xl">
+        <button
+          onClick={resetFlow}
+          className="flex items-center gap-1 text-sm text-chocolate/40 hover:text-chocolate mb-6 transition-colors"
+        >
+          &larr; Back
+        </button>
+
+        <h1 className="font-heading text-3xl text-chocolate mb-2">
+          Create from Scratch
+        </h1>
+        <p className="text-chocolate/60 mb-8">
+          Describe what you want and AI will generate everything — copy, layout,
+          and style.
+        </p>
+
+        {/* Description input */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-chocolate mb-2">
+            Describe your ad
+          </label>
+          <textarea
+            value={adDescription}
+            onChange={(e) => setAdDescription(e.target.value)}
+            placeholder="e.g., Bold Instagram ad for Apple Cinnamon flavor. Focus on 20g protein and how it's perfect for busy mornings. Fun and colorful vibe."
+            className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-32 resize-none placeholder:text-chocolate/30"
+          />
+        </div>
+
+        {/* Settings */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
+          <div>
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Ad Size
+            </label>
+            <select
+              value={adSizeId}
+              onChange={(e) => setAdSizeId(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+            >
+              {adSizes.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Flavor
+            </label>
+            <select
+              value={flavor}
+              onChange={(e) => setFlavor(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+            >
+              {FLAVORS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-chocolate/50 mb-1">
+              Channel
+            </label>
+            <select
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+            >
+              <option value="social">Social Media</option>
+              <option value="dtc">DTC / Website</option>
+              <option value="retail">Retail</option>
+              <option value="wholesale">Wholesale</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Quick ideas */}
+        <div className="mb-6">
+          <p className="text-xs text-chocolate/40 mb-2">Quick ideas:</p>
+          <div className="flex flex-wrap gap-2">
+            {[
+              "Bold promo ad — 20% off first order",
+              "Lifestyle ad — morning routine vibes",
+              "Protein-focused — gym & fitness angle",
+              "Family-friendly breakfast ad",
+            ].map((idea) => (
+              <button
+                key={idea}
+                onClick={() => setAdDescription(idea)}
+                className="text-xs px-3 py-1.5 bg-chocolate/5 text-chocolate/60 rounded-full hover:bg-chocolate/10 transition-colors"
+              >
+                {idea}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {error}
+          </div>
+        )}
+
+        <button
+          onClick={handleCreateFromScratch}
+          disabled={!adDescription.trim() || generating}
+          className="w-full py-3.5 bg-sky text-white rounded-xl font-medium text-lg hover:bg-sky/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {generating ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg
+                className="animate-spin w-5 h-5"
+                viewBox="0 0 24 24"
+                fill="none"
+              >
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  className="opacity-25"
+                />
+                <path
+                  d="M4 12a8 8 0 018-8"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeLinecap="round"
+                  className="opacity-75"
+                />
+              </svg>
+              Generating your ad...
+            </span>
+          ) : (
+            "Generate Ad"
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  // ==================== PREVIEW & EDIT (shared by both flows) ====================
+  return (
+    <div>
+      <button
+        onClick={() => {
+          setCopyVariations([]);
+          setSelectedCopy(null);
+        }}
+        className="flex items-center gap-1 text-sm text-chocolate/40 hover:text-chocolate mb-6 transition-colors"
+      >
+        &larr; Back to {flow === "reference" ? "Reference" : "Description"}
+      </button>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr,340px] gap-8">
+        {/* Left: Preview */}
+        <div>
+          <h2 className="font-heading text-2xl text-chocolate mb-4">
+            Your Ad
+          </h2>
 
           {/* Copy variations */}
-          {copyVariations.length > 0 && (
-            <div className="mb-6">
-              <p className="text-sm font-medium text-chocolate mb-2">
-                Pick a variation:
+          {copyVariations.length > 1 && (
+            <div className="mb-4">
+              <p className="text-xs font-medium text-chocolate/40 mb-2">
+                Copy variations — pick one:
               </p>
-              <div className="space-y-2">
+              <div className="flex gap-2">
                 {copyVariations.map((v, i) => (
                   <button
                     key={i}
@@ -721,213 +749,337 @@ export default function Home() {
                       setSelectedCopy(i);
                       setCustomCopy(v);
                     }}
-                    className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                    className={`flex-1 text-left p-3 rounded-lg border transition-colors ${
                       selectedCopy === i
                         ? "border-peach bg-peach/5"
                         : "border-chocolate/10 hover:border-chocolate/20"
                     }`}
                   >
-                    <p className="font-medium text-chocolate text-sm">
+                    <p className="text-xs font-medium text-chocolate truncate">
                       {v.headline}
                     </p>
-                    <p className="text-xs text-chocolate/60 mt-0.5">
+                    <p className="text-xs text-chocolate/40 truncate mt-0.5">
                       {v.subheadline}
                     </p>
-                    {v.body && (
-                      <p className="text-xs text-chocolate/40 mt-0.5">
-                        {v.body}
-                      </p>
-                    )}
-                    <p className="text-xs text-peach mt-1">{v.cta}</p>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Editable copy fields */}
-          <div className="space-y-3 mb-6">
-            <p className="text-sm font-medium text-chocolate">
-              Edit copy (or write from scratch):
+          {/* Ad preview */}
+          <div
+            ref={adPreviewRef}
+            className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
+            style={{ width: size.width * scale, height: size.height * scale }}
+          >
+            <div
+              className="ad-render-target"
+              style={{
+                transform: `scale(${scale})`,
+                transformOrigin: "top left",
+                width: size.width,
+                height: size.height,
+              }}
+              dangerouslySetInnerHTML={{ __html: adHtml }}
+            />
+          </div>
+          <p className="text-xs text-chocolate/30 mt-2">
+            {size.width} x {size.height}px — Preview at{" "}
+            {Math.round(scale * 100)}%
+          </p>
+        </div>
+
+        {/* Right: Controls */}
+        <div className="space-y-4">
+          {/* Export buttons */}
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="w-full py-3 bg-peach text-white rounded-xl font-medium hover:bg-peach/90 transition-colors disabled:opacity-50"
+          >
+            {exporting ? "Exporting..." : "Download PNG"}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-2.5 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save to Gallery"}
+          </button>
+
+          {/* Edit copy */}
+          <div className="pt-3 border-t border-chocolate/10">
+            <p className="text-xs font-medium text-chocolate/40 mb-2">
+              Edit Copy
             </p>
-            <div>
-              <label className="block text-xs text-chocolate/40 mb-1">
-                Headline
-              </label>
+            <div className="space-y-2">
               <input
                 type="text"
                 value={customCopy.headline}
                 onChange={(e) =>
                   setCustomCopy({ ...customCopy, headline: e.target.value })
                 }
-                placeholder="Your headline"
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
+                placeholder="Headline"
               />
-            </div>
-            <div>
-              <label className="block text-xs text-chocolate/40 mb-1">
-                Subheadline
-              </label>
               <input
                 type="text"
                 value={customCopy.subheadline}
                 onChange={(e) =>
                   setCustomCopy({ ...customCopy, subheadline: e.target.value })
                 }
-                placeholder="Supporting line"
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
+                placeholder="Subheadline"
               />
-            </div>
-            <div>
-              <label className="block text-xs text-chocolate/40 mb-1">
-                Body (optional)
-              </label>
               <textarea
                 value={customCopy.body}
                 onChange={(e) =>
                   setCustomCopy({ ...customCopy, body: e.target.value })
                 }
-                placeholder="Additional body copy"
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm h-16 resize-none"
+                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate h-16 resize-none"
+                placeholder="Body (optional)"
               />
-            </div>
-            <div>
-              <label className="block text-xs text-chocolate/40 mb-1">
-                CTA
-              </label>
               <input
                 type="text"
                 value={customCopy.cta}
                 onChange={(e) =>
                   setCustomCopy({ ...customCopy, cta: e.target.value })
                 }
-                placeholder="Shop Now"
-                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+                className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate"
+                placeholder="CTA"
               />
             </div>
           </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={() => setStep(2)}
-              className="px-6 py-2.5 bg-chocolate/5 text-chocolate rounded-full font-medium hover:bg-chocolate/10 transition-colors"
-            >
-              Back
-            </button>
-            <button
-              onClick={() => setStep(4)}
-              className="px-6 py-2.5 bg-peach text-white rounded-full font-medium hover:bg-peach/90 transition-colors"
-            >
-              Next: Preview & Export
-            </button>
+          {/* Template */}
+          <div className="pt-3 border-t border-chocolate/10">
+            <p className="text-xs font-medium text-chocolate/40 mb-2">
+              Template
+            </p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTemplateId(t.id)}
+                  className={`p-2 rounded-lg border text-left transition-colors ${
+                    templateId === t.id
+                      ? "border-peach bg-peach/5"
+                      : "border-chocolate/10 hover:border-chocolate/20"
+                  }`}
+                >
+                  <p className="text-xs font-medium text-chocolate">{t.name}</p>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* Step 4: Preview & Export */}
-      {step === 4 && (
-        <div>
-          <h2 className="font-heading text-2xl text-chocolate mb-6">
-            Preview & Export
-          </h2>
-
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,300px] gap-8">
-            {/* Ad Preview */}
-            <div>
-              <div
-                ref={adPreviewRef}
-                className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
-                style={{
-                  width: size.width * scale,
-                  height: size.height * scale,
-                }}
-              >
-                <div
-                  className="ad-render-target"
-                  style={{
-                    transform: `scale(${scale})`,
-                    transformOrigin: "top left",
-                    width: size.width,
-                    height: size.height,
-                  }}
-                  dangerouslySetInnerHTML={{ __html: adHtml }}
+          {/* Colors */}
+          <div className="pt-3 border-t border-chocolate/10">
+            <p className="text-xs font-medium text-chocolate/40 mb-2">Colors</p>
+            <div className="flex gap-3">
+              <div>
+                <label className="block text-xs text-chocolate/30 mb-1">
+                  BG
+                </label>
+                <input
+                  type="color"
+                  value={backgroundColor}
+                  onChange={(e) => setBackgroundColor(e.target.value)}
+                  className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
                 />
               </div>
-              <p className="text-xs text-chocolate/30 mt-2">
-                Actual size: {size.width} x {size.height}px — Preview scaled to{" "}
-                {Math.round(scale * 100)}%
+              <div>
+                <label className="block text-xs text-chocolate/30 mb-1">
+                  Text
+                </label>
+                <input
+                  type="color"
+                  value={textColor}
+                  onChange={(e) => setTextColor(e.target.value)}
+                  className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-chocolate/30 mb-1">
+                  Accent
+                </label>
+                <input
+                  type="color"
+                  value={accentColor}
+                  onChange={(e) => setAccentColor(e.target.value)}
+                  className="w-8 h-8 rounded cursor-pointer border border-chocolate/10"
+                />
+              </div>
+            </div>
+            <div className="flex gap-1 mt-2">
+              {Object.values({
+                ...brandContext.colors.primary,
+                ...brandContext.colors.pairings,
+              }).map((hex) => (
+                <button
+                  key={hex}
+                  onClick={() => setAccentColor(hex)}
+                  className="w-5 h-5 rounded border border-chocolate/10"
+                  style={{ backgroundColor: hex }}
+                  title={hex}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Ad Size */}
+          <div className="pt-3 border-t border-chocolate/10">
+            <p className="text-xs font-medium text-chocolate/40 mb-2">
+              Ad Size
+            </p>
+            <select
+              value={adSizeId}
+              onChange={(e) => setAdSizeId(e.target.value)}
+              className="w-full border border-chocolate/20 rounded-lg px-3 py-2 bg-vanilla text-chocolate text-sm"
+            >
+              {adSizes.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.width}x{s.height})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Brand Assets */}
+          {brandAssets.length > 0 && (
+            <div className="pt-3 border-t border-chocolate/10">
+              <p className="text-xs font-medium text-chocolate/40 mb-2">
+                Brand Assets
               </p>
-            </div>
 
-            {/* Export controls */}
-            <div className="space-y-3">
-              <button
-                onClick={handleExport}
-                disabled={exporting}
-                className="w-full py-3 bg-peach text-white rounded-xl font-medium hover:bg-peach/90 transition-colors disabled:opacity-50"
-              >
-                {exporting ? "Exporting..." : "Download PNG"}
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="w-full py-3 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50"
-              >
-                {saving ? "Saving..." : "Save to Gallery"}
-              </button>
-              <button
-                onClick={() => setStep(3)}
-                className="w-full py-3 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors"
-              >
-                Back to Edit Copy
-              </button>
-              <button
-                onClick={() => setStep(2)}
-                className="w-full py-3 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors"
-              >
-                Back to Configure
-              </button>
+              {/* Product Image */}
+              <div className="mb-2">
+                <p className="text-xs text-chocolate/30 mb-1">Product</p>
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  <button
+                    onClick={() => setSelectedProductImage(null)}
+                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
+                      !selectedProductImage
+                        ? "border-peach"
+                        : "border-chocolate/10"
+                    }`}
+                  >
+                    &mdash;
+                  </button>
+                  {brandAssets
+                    .filter(
+                      (a) =>
+                        a.category === "product_photo" ||
+                        a.category === "packaging"
+                    )
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setSelectedProductImage(a.public_url)}
+                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
+                          selectedProductImage === a.public_url
+                            ? "border-peach"
+                            : "border-chocolate/10"
+                        }`}
+                      >
+                        <img
+                          src={a.public_url}
+                          alt={a.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                </div>
+              </div>
 
-              {/* Quick edit fields */}
-              <div className="pt-3 border-t border-chocolate/10">
-                <p className="text-xs font-medium text-chocolate/40 mb-2">
-                  Quick Edit
-                </p>
-                <input
-                  type="text"
-                  value={customCopy.headline}
-                  onChange={(e) =>
-                    setCustomCopy({ ...customCopy, headline: e.target.value })
-                  }
-                  className="w-full border border-chocolate/20 rounded-lg px-2 py-1.5 text-xs bg-vanilla text-chocolate mb-2"
-                  placeholder="Headline"
-                />
-                <input
-                  type="text"
-                  value={customCopy.subheadline}
-                  onChange={(e) =>
-                    setCustomCopy({
-                      ...customCopy,
-                      subheadline: e.target.value,
-                    })
-                  }
-                  className="w-full border border-chocolate/20 rounded-lg px-2 py-1.5 text-xs bg-vanilla text-chocolate mb-2"
-                  placeholder="Subheadline"
-                />
-                <input
-                  type="text"
-                  value={customCopy.cta}
-                  onChange={(e) =>
-                    setCustomCopy({ ...customCopy, cta: e.target.value })
-                  }
-                  className="w-full border border-chocolate/20 rounded-lg px-2 py-1.5 text-xs bg-vanilla text-chocolate"
-                  placeholder="CTA"
-                />
+              {/* Background */}
+              <div className="mb-2">
+                <p className="text-xs text-chocolate/30 mb-1">Background</p>
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  <button
+                    onClick={() => setSelectedBackground(null)}
+                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
+                      !selectedBackground
+                        ? "border-peach"
+                        : "border-chocolate/10"
+                    }`}
+                  >
+                    &mdash;
+                  </button>
+                  {brandAssets
+                    .filter(
+                      (a) =>
+                        a.category === "lifestyle" ||
+                        a.category === "background"
+                    )
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setSelectedBackground(a.public_url)}
+                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
+                          selectedBackground === a.public_url
+                            ? "border-peach"
+                            : "border-chocolate/10"
+                        }`}
+                      >
+                        <img
+                          src={a.public_url}
+                          alt={a.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                </div>
+              </div>
+
+              {/* Logo */}
+              <div>
+                <p className="text-xs text-chocolate/30 mb-1">Logo</p>
+                <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  <button
+                    onClick={() => setSelectedLogo(null)}
+                    className={`shrink-0 w-10 h-10 rounded-lg border-2 flex items-center justify-center text-xs text-chocolate/20 ${
+                      !selectedLogo ? "border-peach" : "border-chocolate/10"
+                    }`}
+                  >
+                    &mdash;
+                  </button>
+                  {brandAssets
+                    .filter(
+                      (a) => a.category === "logo" || a.category === "mascot"
+                    )
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setSelectedLogo(a.public_url)}
+                        className={`shrink-0 w-10 h-10 rounded-lg border-2 overflow-hidden ${
+                          selectedLogo === a.public_url
+                            ? "border-peach"
+                            : "border-chocolate/10"
+                        }`}
+                      >
+                        <img
+                          src={a.public_url}
+                          alt={a.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Start Over */}
+          <button
+            onClick={resetFlow}
+            className="w-full py-2.5 text-chocolate/40 text-sm hover:text-chocolate transition-colors"
+          >
+            Start Over
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }
