@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { toPng } from "html-to-image";
+import { toCanvas } from "html-to-image";
 import { saveAs } from "file-saver";
 
 /* ------------------------------------------------------------------ */
@@ -156,18 +156,23 @@ export default function GalleryPage() {
     document.body.appendChild(container);
 
     try {
-      // Wait a tick so any images / fonts can load
+      // Wait for fonts + layout to settle
+      await document.fonts.ready;
       await new Promise((r) => setTimeout(r, 200));
 
-      const dataUrl = await toPng(container, {
+      const canvas = await toCanvas(container, {
         width,
         height,
-        pixelRatio: 2,
+        pixelRatio: 3,
       });
 
-      saveAs(
-        dataUrl,
-        `chichi-ad-${ad.flavor || "untitled"}-${ad.ad_size}.png`
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            saveAs(blob, `chichi-ad-${ad.flavor || "untitled"}-${ad.ad_size}.png`);
+          }
+        },
+        "image/png"
       );
     } catch (err) {
       console.error("Download failed:", err);

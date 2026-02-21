@@ -391,32 +391,34 @@ export default function Home() {
 
   // ============ Export PNG (high quality) ============
   async function handleExport() {
-    if (!adPreviewRef.current) return;
     setExporting(true);
     try {
       const size = getAdSize(adSizeId);
-      const el = adPreviewRef.current.querySelector(".ad-render-target");
-      if (!el) return;
 
-      // Temporarily set to full size for capture
-      const origTransform = el.style.transform;
-      const origWidth = el.parentElement.style.width;
-      const origHeight = el.parentElement.style.height;
-      el.style.transform = "scale(1)";
-      el.parentElement.style.width = size.width + "px";
-      el.parentElement.style.height = size.height + "px";
+      // Create an off-screen container at the exact ad dimensions
+      // This avoids text reflow issues from messing with the visible preview's transform
+      const offscreen = document.createElement("div");
+      offscreen.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${size.width}px;height:${size.height}px;overflow:hidden;z-index:-1;`;
 
-      const canvas = await toCanvas(el, {
+      const adEl = document.createElement("div");
+      adEl.style.cssText = `width:${size.width}px;height:${size.height}px;position:relative;overflow:hidden;`;
+      adEl.innerHTML = adHtml;
+
+      offscreen.appendChild(adEl);
+      document.body.appendChild(offscreen);
+
+      // Wait for layout + fonts to settle
+      await document.fonts.ready;
+      await new Promise((r) => setTimeout(r, 150));
+
+      const canvas = await toCanvas(adEl, {
         width: size.width,
         height: size.height,
         pixelRatio: 3,
-        quality: 1.0,
       });
 
-      // Restore preview scale
-      el.style.transform = origTransform;
-      el.parentElement.style.width = origWidth;
-      el.parentElement.style.height = origHeight;
+      // Clean up
+      document.body.removeChild(offscreen);
 
       const flavorSlug =
         flavor === "All / General"
