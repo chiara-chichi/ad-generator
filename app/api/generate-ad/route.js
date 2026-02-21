@@ -50,6 +50,15 @@ DESIGN RULES:
 8. Write punchy, on-brand copy. Lead with taste and experience, then nutrition facts. ChiChi makes CHICKPEA protein hot cereal, NOT oatmeal.
 9. Make it look like a real professional ad — proper spacing, alignment, visual hierarchy.
 10. Think about what would make someone stop scrolling.
+
+AD PERFORMANCE OPTIMIZATION (apply these automatically):
+- Ensure ONE clear visual hook that grabs attention instantly — bold headline, striking color contrast, or dramatic typography
+- Text must be readable on mobile — minimum 14px for body, 24px+ for headlines at 1080px width
+- CTA should be prominent, action-oriented, and high-contrast against its background
+- Respect the ~20% text rule for Meta/Instagram ads — balance text with visual breathing room
+- Strong visual hierarchy: hook → benefit → CTA
+- Use whitespace intentionally — avoid overcrowding sections
+- Brand name should be visible but not dominating
 ${product ? `\nFEATURED PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein, ${product.calories} cal)` : ""}
 ${channel ? `\nCHANNEL: ${channel} — optimize the design for this platform.` : ""}
 

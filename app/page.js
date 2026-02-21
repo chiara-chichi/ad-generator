@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { toPng } from "html-to-image";
+import { toCanvas } from "html-to-image";
 import { saveAs } from "file-saver";
 import { adSizes, getAdSize } from "@/lib/ad-sizes";
 import { brandContext } from "@/lib/brand-context";
@@ -49,9 +49,12 @@ export default function Home() {
   const [editInstruction, setEditInstruction] = useState("");
   const [editing, setEditing] = useState(false);
 
-  // Meta ads review
+  // Meta ads review — auto-triggered
   const [review, setReview] = useState(null);
   const [reviewing, setReviewing] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [selectedImprovements, setSelectedImprovements] = useState([]);
+  const [applyingFixes, setApplyingFixes] = useState(false);
 
   // Brand assets
   const [brandAssets, setBrandAssets] = useState([]);
@@ -87,7 +90,6 @@ export default function Home() {
             if (ad.accentColor) setAccentColor(ad.accentColor);
             if (ad.flavor) setFlavor(ad.flavor);
             if (ad.channel) setChannel(ad.channel);
-            // Parse ad size
             if (ad.adSize) {
               const match = ad.adSize.match(/(\d+)x(\d+)/);
               if (match) {
@@ -100,7 +102,6 @@ export default function Home() {
               }
             }
             setFlow("edit");
-            // Clean URL
             window.history.replaceState({}, "", "/");
           }
         }
@@ -128,10 +129,12 @@ export default function Home() {
   });
 
   // Render HTML with tokens substituted
-  function renderAd() {
-    if (!generatedHtml) return "";
-    let html = generatedHtml;
-    Object.entries(fields).forEach(([key, value]) => {
+  function renderAd(htmlOverride, fieldsOverride) {
+    const h = htmlOverride || generatedHtml;
+    const f = fieldsOverride || fields;
+    if (!h) return "";
+    let html = h;
+    Object.entries(f).forEach(([key, value]) => {
       html = html.replaceAll(`{{${key}}}`, value || "");
     });
     return html;
@@ -154,6 +157,37 @@ export default function Home() {
         `- ${a.category?.replace("_", " ") || "image"}: ${a.public_url} (name: "${a.name}") — use <img src="${a.public_url}" crossorigin="anonymous" /> in the HTML`
     );
     return `\n\nBRAND ASSETS TO INCLUDE IN THE AD (use these actual image URLs with <img> tags):\n${lines.join("\n")}`;
+  }
+
+  // ============ Auto-Review (non-blocking) ============
+  async function triggerAutoReview(html, fieldsObj) {
+    setReviewing(true);
+    setReview(null);
+    setSelectedImprovements([]);
+    try {
+      const size = getAdSize(adSizeId);
+      let rendered = html;
+      Object.entries(fieldsObj).forEach(([key, value]) => {
+        rendered = rendered.replaceAll(`{{${key}}}`, value || "");
+      });
+      const res = await fetch("/api/review-ad", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          adHtml: rendered,
+          channel,
+          adSize: `${size.width}x${size.height}`,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setReview(data);
+      }
+    } catch (err) {
+      console.error("Auto-review failed:", err);
+    } finally {
+      setReviewing(false);
+    }
   }
 
   // ============ FLOW 1: Recreate from reference ============
@@ -189,6 +223,9 @@ export default function Home() {
       if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
       if (data.textColor) setTextColor(data.textColor);
       if (data.accentColor) setAccentColor(data.accentColor);
+
+      // Auto-review in background
+      triggerAutoReview(data.html, data.fields || {});
     } catch (err) {
       console.error("Recreate failed:", err);
       setError(err.message || "Something went wrong.");
@@ -225,6 +262,9 @@ export default function Home() {
       if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
       if (data.textColor) setTextColor(data.textColor);
       if (data.accentColor) setAccentColor(data.accentColor);
+
+      // Auto-review in background
+      triggerAutoReview(data.html, data.fields || {});
     } catch (err) {
       console.error("Create failed:", err);
       setError(err.message || "Something went wrong.");
@@ -258,7 +298,9 @@ export default function Home() {
       setGeneratedHtml(data.html);
       setFields(data.fields || {});
       setEditInstruction("");
-      setReview(null); // clear old review
+
+      // Auto-review after edit
+      triggerAutoReview(data.html, data.fields || {});
     } catch (err) {
       console.error("Edit failed:", err);
       setError(err.message || "Edit failed.");
@@ -267,37 +309,54 @@ export default function Home() {
     }
   }
 
-  // ============ Meta Ads Review ============
-  async function handleReviewAd() {
-    setReviewing(true);
+  // ============ Apply Selected Fixes ============
+  async function handleApplyFixes() {
+    if (!review?.improvements || selectedImprovements.length === 0) return;
+    setApplyingFixes(true);
+    setError(null);
+
     try {
+      const fixes = selectedImprovements.map((idx) => review.improvements[idx]);
+      const instruction = fixes
+        .map((f, i) => `${i + 1}) ${f.fix}`)
+        .join("\n");
+
       const size = getAdSize(adSizeId);
-      const res = await fetch("/api/review-ad", {
+      const res = await fetch("/api/edit-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          adHtml: renderAd(),
-          channel,
-          adSize: `${size.width}x${size.height}`,
+          currentHtml: renderAd(),
+          instruction: `Apply these specific improvements to the ad:\n${instruction}`,
+          adWidth: size.width,
+          adHeight: size.height,
         }),
       });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setReview(data);
+      if (!res.ok) throw new Error(data.error || "Apply fixes failed");
+
+      setGeneratedHtml(data.html);
+      setFields(data.fields || {});
+      setSelectedImprovements([]);
+
+      // Re-review after fixes
+      triggerAutoReview(data.html, data.fields || {});
     } catch (err) {
-      console.error("Review failed:", err);
+      console.error("Apply fixes failed:", err);
+      setError(err.message || "Failed to apply fixes.");
     } finally {
-      setReviewing(false);
+      setApplyingFixes(false);
     }
   }
 
   // ============ Regenerate ============
   async function handleRegenerate() {
     setReview(null);
+    setSelectedImprovements([]);
     if (flow === "reference") await handleRecreate();
     else if (flow === "scratch") await handleCreateFromScratch();
     else {
-      // Re-edit from gallery — use NL edit with "regenerate" instruction
       setEditInstruction("Regenerate this ad with a fresh creative take, keeping the same general concept and brand style.");
       await handleEditWithAI();
     }
@@ -316,6 +375,7 @@ export default function Home() {
     setReview(null);
     setEditInstruction("");
     setSelectedAssets([]);
+    setSelectedImprovements([]);
     setBackgroundColor("#fffbec");
     setTextColor("#4b1c10");
     setAccentColor("#f0615a");
@@ -326,9 +386,10 @@ export default function Home() {
     setFields({});
     setError(null);
     setReview(null);
+    setSelectedImprovements([]);
   }
 
-  // ============ Export PNG ============
+  // ============ Export PNG (high quality) ============
   async function handleExport() {
     if (!adPreviewRef.current) return;
     setExporting(true);
@@ -337,21 +398,38 @@ export default function Home() {
       const el = adPreviewRef.current.querySelector(".ad-render-target");
       if (!el) return;
 
-      const dataUrl = await toPng(el, {
+      // Temporarily set to full size for capture
+      const origTransform = el.style.transform;
+      const origWidth = el.parentElement.style.width;
+      const origHeight = el.parentElement.style.height;
+      el.style.transform = "scale(1)";
+      el.parentElement.style.width = size.width + "px";
+      el.parentElement.style.height = size.height + "px";
+
+      const canvas = await toCanvas(el, {
         width: size.width,
         height: size.height,
-        pixelRatio: 2,
+        pixelRatio: 3,
         quality: 1.0,
-        skipAutoScale: true,
       });
+
+      // Restore preview scale
+      el.style.transform = origTransform;
+      el.parentElement.style.width = origWidth;
+      el.parentElement.style.height = origHeight;
 
       const flavorSlug =
         flavor === "All / General"
           ? "general"
           : flavor.toLowerCase().replace(/\s+/g, "-");
-      saveAs(
-        dataUrl,
-        `chichi-${flavorSlug}-${size.width}x${size.height}.png`
+
+      canvas.toBlob(
+        (blob) => {
+          if (blob) {
+            saveAs(blob, `chichi-${flavorSlug}-${size.width}x${size.height}.png`);
+          }
+        },
+        "image/png"
       );
     } catch (err) {
       console.error("Export failed:", err);
@@ -403,8 +481,20 @@ export default function Home() {
   const adHtml = renderAd();
   const hasGenerated = !!generatedHtml;
 
+  // Helper: score color
+  function scoreColor(score) {
+    if (score >= 7) return "text-green-600";
+    if (score >= 4) return "text-yellow-600";
+    return "text-red-500";
+  }
+  function scoreBg(score) {
+    if (score >= 7) return "bg-green-50 border-green-200";
+    if (score >= 4) return "bg-yellow-50 border-yellow-200";
+    return "bg-red-50 border-red-200";
+  }
+
   // ============ Brand Asset Picker Component ============
-  function AssetPicker() {
+  function AssetPicker({ compact }) {
     if (brandAssets.length === 0) return null;
     const grouped = {
       packaging: brandAssets.filter((a) => a.category === "packaging"),
@@ -416,24 +506,22 @@ export default function Home() {
     if (nonEmpty.length === 0) return null;
 
     return (
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-chocolate mb-2">
-          Include brand assets{" "}
-          <span className="font-normal text-chocolate/40">(optional)</span>
+      <div className={compact ? "" : "mb-6"}>
+        <label className="block text-xs font-medium text-chocolate/40 mb-2">
+          {compact ? "Add images to ad" : "Include brand assets"}{" "}
+          <span className="font-normal text-chocolate/30">(optional)</span>
         </label>
         {nonEmpty.map(([cat, assets]) => (
-          <div key={cat} className="mb-2">
-            <p className="text-xs text-chocolate/40 mb-1 capitalize">
-              {cat.replace("_", " ")}
-            </p>
-            <div className="flex gap-2 overflow-x-auto pb-1">
+          <div key={cat} className="mb-1.5">
+            {!compact && <p className="text-xs text-chocolate/40 mb-1 capitalize">{cat.replace("_", " ")}</p>}
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
               {assets.map((a) => {
                 const isSelected = selectedAssets.find((s) => s.id === a.id);
                 return (
                   <button
                     key={a.id}
                     onClick={() => toggleAsset(a)}
-                    className={`shrink-0 w-14 h-14 rounded-lg border-2 overflow-hidden transition-all ${
+                    className={`shrink-0 ${compact ? "w-10 h-10" : "w-14 h-14"} rounded-lg border-2 overflow-hidden transition-all ${
                       isSelected
                         ? "border-peach ring-2 ring-peach/30"
                         : "border-chocolate/10 hover:border-chocolate/20"
@@ -444,9 +532,7 @@ export default function Home() {
                       src={a.public_url}
                       alt={a.name}
                       className="w-full h-full object-cover"
-                      onError={(e) => {
-                        e.target.style.display = "none";
-                      }}
+                      onError={(e) => { e.target.style.display = "none"; }}
                     />
                   </button>
                 );
@@ -457,8 +543,7 @@ export default function Home() {
         {selectedAssets.length > 0 && (
           <p className="text-xs text-peach mt-1">
             {selectedAssets.length} asset{selectedAssets.length > 1 ? "s" : ""}{" "}
-            selected — AI will include{" "}
-            {selectedAssets.length === 1 ? "it" : "them"} in the ad
+            selected{compact ? "" : " — AI will include them in the ad"}
           </p>
         )}
       </div>
@@ -700,49 +785,132 @@ export default function Home() {
           </div>
           <p className="text-xs text-chocolate/30 mt-2">{size.width} x {size.height}px — Preview at {Math.round(scale * 100)}%</p>
 
-          {/* Meta Ads Review Results */}
-          {review && (
-            <div className="mt-6 p-4 bg-white rounded-xl border border-chocolate/10">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="text-3xl font-bold text-chocolate">{review.score}<span className="text-lg text-chocolate/40">/10</span></div>
-                <p className="text-sm text-chocolate/70 flex-1">{review.verdict}</p>
-              </div>
-
-              <div className="grid grid-cols-4 gap-2 mb-3">
-                {[["Hook", review.hookScore], ["CTA", review.ctaScore], ["Clarity", review.clarityScore], ["Visual", review.visualScore]].map(([label, score]) => (
-                  <div key={label} className="text-center p-2 bg-chocolate/5 rounded-lg">
-                    <p className="text-xs text-chocolate/40">{label}</p>
-                    <p className={`text-lg font-bold ${score >= 7 ? "text-green-600" : score >= 4 ? "text-yellow-600" : "text-red-500"}`}>{score}</p>
+          {/* Auto-Review Panel */}
+          {(reviewing || review) && (
+            <div className="mt-4 bg-white rounded-xl border border-chocolate/10 overflow-hidden">
+              {/* Always-visible score bar */}
+              <button
+                onClick={() => review && setReviewOpen(!reviewOpen)}
+                className="w-full px-4 py-3 flex items-center gap-3 hover:bg-chocolate/[0.02] transition-colors text-left"
+              >
+                {reviewing ? (
+                  <div className="flex items-center gap-2 text-sm text-chocolate/50">
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+                    </svg>
+                    Reviewing ad for conversions...
                   </div>
-                ))}
-              </div>
-
-              {review.strengths?.length > 0 && (
-                <div className="mb-3">
-                  <p className="text-xs font-medium text-green-700 mb-1">Strengths</p>
-                  {review.strengths.map((s, i) => (
-                    <p key={i} className="text-xs text-chocolate/70 pl-3 border-l-2 border-green-300 mb-1">{s}</p>
-                  ))}
-                </div>
-              )}
-
-              {review.improvements?.length > 0 && (
-                <div className="mb-3">
-                  <p className="text-xs font-medium text-red-600 mb-1">Improvements</p>
-                  {review.improvements.map((imp, i) => (
-                    <div key={i} className="mb-2 pl-3 border-l-2 border-red-300">
-                      <p className="text-xs font-medium text-chocolate">{imp.issue}</p>
-                      <p className="text-xs text-chocolate/60">{imp.fix}</p>
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${imp.priority === "high" ? "bg-red-100 text-red-700" : imp.priority === "medium" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{imp.priority}</span>
+                ) : review && (
+                  <>
+                    <div className={`text-2xl font-bold ${scoreColor(review.score)}`}>
+                      {review.score}<span className="text-sm text-chocolate/30">/10</span>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-chocolate/60 truncate">{review.verdict}</p>
+                    </div>
+                    <div className="flex gap-1.5 shrink-0">
+                      {[["H", review.hookScore], ["C", review.ctaScore], ["Cl", review.clarityScore], ["V", review.visualScore]].map(([label, s]) => (
+                        <div key={label} className={`text-center px-1.5 py-0.5 rounded text-xs font-medium ${scoreColor(s)}`}>
+                          {label}:{s}
+                        </div>
+                      ))}
+                    </div>
+                    <svg className={`w-4 h-4 text-chocolate/30 transition-transform ${reviewOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                    </svg>
+                  </>
+                )}
+              </button>
 
-              {review.tips?.length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-sky mb-1">Platform Tips</p>
-                  {review.tips.map((t, i) => (<p key={i} className="text-xs text-chocolate/60 mb-1">💡 {t}</p>))}
+              {/* Collapsible details */}
+              {review && reviewOpen && (
+                <div className="px-4 pb-4 border-t border-chocolate/5">
+                  {/* Strengths */}
+                  {review.strengths?.length > 0 && (
+                    <div className="mt-3 mb-3">
+                      <p className="text-xs font-medium text-green-700 mb-1">Strengths</p>
+                      {review.strengths.map((s, i) => (
+                        <p key={i} className="text-xs text-chocolate/70 pl-3 border-l-2 border-green-300 mb-1">{s}</p>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Clickable Improvements */}
+                  {review.improvements?.length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-xs font-medium text-chocolate/60 mb-2">
+                        Click improvements to select, then apply:
+                      </p>
+                      {review.improvements.map((imp, i) => {
+                        const isSelected = selectedImprovements.includes(i);
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              setSelectedImprovements((prev) =>
+                                isSelected
+                                  ? prev.filter((idx) => idx !== i)
+                                  : [...prev, i]
+                              );
+                            }}
+                            className={`w-full text-left mb-2 p-2.5 rounded-lg border-2 transition-all ${
+                              isSelected
+                                ? "border-peach bg-peach/5"
+                                : "border-transparent bg-chocolate/[0.03] hover:border-chocolate/10"
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className={`mt-0.5 w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors ${
+                                isSelected ? "bg-peach border-peach" : "border-chocolate/20"
+                              }`}>
+                                {isSelected && (
+                                  <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                                  </svg>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-chocolate">{imp.issue}</p>
+                                <p className="text-xs text-chocolate/50 mt-0.5">{imp.fix}</p>
+                              </div>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
+                                imp.priority === "high" ? "bg-red-100 text-red-700"
+                                : imp.priority === "medium" ? "bg-yellow-100 text-yellow-700"
+                                : "bg-gray-100 text-gray-600"
+                              }`}>{imp.priority}</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+
+                      {/* Apply Fixes Button */}
+                      {selectedImprovements.length > 0 && (
+                        <button
+                          onClick={handleApplyFixes}
+                          disabled={applyingFixes}
+                          className="w-full mt-1 py-2.5 bg-peach text-white rounded-lg font-medium text-sm hover:bg-peach/90 transition-colors disabled:opacity-50"
+                        >
+                          {applyingFixes ? (
+                            <span className="flex items-center justify-center gap-2">
+                              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                                <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+                              </svg>Applying fixes...
+                            </span>
+                          ) : `Apply ${selectedImprovements.length} Fix${selectedImprovements.length > 1 ? "es" : ""}`}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tips */}
+                  {review.tips?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-sky mb-1">Platform Tips</p>
+                      {review.tips.map((t, i) => (<p key={i} className="text-xs text-chocolate/60 mb-1">{t}</p>))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -753,7 +921,7 @@ export default function Home() {
         <div className="space-y-4">
           <button onClick={handleExport} disabled={exporting}
             className="w-full py-3 bg-peach text-white rounded-xl font-medium hover:bg-peach/90 transition-colors disabled:opacity-50">
-            {exporting ? "Exporting..." : "Download PNG (2x)"}
+            {exporting ? "Exporting..." : "Download PNG"}
           </button>
           <button onClick={handleSave} disabled={saving}
             className="w-full py-2.5 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50">
@@ -767,7 +935,7 @@ export default function Home() {
               <input type="text" value={editInstruction}
                 onChange={(e) => setEditInstruction(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !editing && handleEditWithAI()}
-                placeholder="e.g., Make headline bigger, change CTA to Shop Now, use teal background..."
+                placeholder="e.g., Make headline bigger, add a product photo, change CTA..."
                 className="flex-1 border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate placeholder:text-chocolate/25" />
               <button onClick={handleEditWithAI} disabled={!editInstruction.trim() || editing}
                 className="px-4 py-2 bg-sky text-white rounded-lg text-sm font-medium hover:bg-sky/90 transition-colors disabled:opacity-50 shrink-0">
@@ -780,30 +948,35 @@ export default function Home() {
               </button>
             </div>
             <div className="flex flex-wrap gap-1 mt-2">
-              {["Make headline bigger", "Change background to teal", "Add more whitespace", "Make CTA more urgent", "Simplify the layout"].map((q) => (
+              {["Make headline bigger", "Add more whitespace", "Make CTA more urgent", "Simplify the layout"].map((q) => (
                 <button key={q} onClick={() => setEditInstruction(q)}
                   className="text-xs px-2 py-0.5 bg-sky/5 text-sky/70 rounded hover:bg-sky/10 transition-colors">{q}</button>
               ))}
             </div>
           </div>
 
+          {/* Brand Assets — add/change images */}
+          <div className="pt-3 border-t border-chocolate/10">
+            <AssetPicker compact />
+            {selectedAssets.length > 0 && (
+              <button
+                onClick={() => {
+                  const assetInstruction = selectedAssets.map(a =>
+                    `Add this ${a.category?.replace("_", " ") || "image"} to the ad: <img src="${a.public_url}" crossorigin="anonymous" style="max-width:100%;max-height:200px;object-fit:contain;" />`
+                  ).join(". ");
+                  setEditInstruction(assetInstruction);
+                }}
+                className="w-full mt-2 py-2 bg-chocolate/5 text-chocolate rounded-lg text-xs font-medium hover:bg-chocolate/10 transition-colors"
+              >
+                Add {selectedAssets.length} image{selectedAssets.length > 1 ? "s" : ""} to ad via AI Edit
+              </button>
+            )}
+          </div>
+
           {/* Regenerate */}
           <button onClick={handleRegenerate} disabled={generating}
             className="w-full py-2.5 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50">
             {generating ? "Regenerating..." : "Regenerate"}
-          </button>
-
-          {/* Review for Conversions */}
-          <button onClick={handleReviewAd} disabled={reviewing}
-            className="w-full py-2.5 bg-dragon-fruit/10 text-dragon-fruit rounded-xl font-medium hover:bg-dragon-fruit/20 transition-colors disabled:opacity-50">
-            {reviewing ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
-                </svg>Reviewing...
-              </span>
-            ) : "Review for Conversions"}
           </button>
 
           {/* Edit Copy — dynamic fields */}
@@ -830,7 +1003,7 @@ export default function Home() {
           {/* Colors */}
           <div className="pt-3 border-t border-chocolate/10">
             <p className="text-xs font-medium text-chocolate/40 mb-2">
-              Colors <span className="font-normal">(use AI edit for best results)</span>
+              Colors <span className="font-normal">(click a color, then Apply)</span>
             </p>
             <div className="flex gap-1 flex-wrap">
               {Object.entries({ ...brandContext.colors.primary, ...brandContext.colors.pairings }).map(([name, hex]) => (

@@ -46,6 +46,16 @@ STRICT RULES:
 8. ChiChi makes CHICKPEA protein hot cereal, NOT oatmeal. Never say oatmeal.
 9. Make borders, spacing, and alignment look clean and professional.
 10. If the reference uses rounded corners, shadows, gradients, or decorative elements — recreate those.
+
+AD PERFORMANCE OPTIMIZATION (apply these automatically while staying faithful to the reference layout):
+- Ensure ONE clear visual hook that grabs attention instantly — bold headline, striking color contrast, or dramatic typography
+- Text must be readable on mobile — minimum 14px for body, 24px+ for headlines at 1080px width
+- CTA should be prominent, action-oriented, and high-contrast against its background
+- Respect the ~20% text rule for Meta/Instagram ads — balance text with visual breathing room
+- Strong visual hierarchy: hook → benefit → CTA
+- Use whitespace intentionally — avoid overcrowding sections
+- Brand name should be visible but not dominating
+Do NOT change the reference layout structure — just make it perform better within that structure.
 ${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nCRITICAL: If the user provided specific text content for sections, use their EXACT text as the field values. Do not rewrite what they gave you.` : ""}
 ${product ? `\nFEATURED PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
 
