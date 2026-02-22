@@ -8,48 +8,40 @@ export async function POST(request) {
     const { adHtml, channel, adSize } = await request.json();
 
     if (!adHtml) {
-      return NextResponse.json(
-        { error: "No ad HTML provided" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "No ad HTML provided" }, { status: 400 });
     }
 
-    const prompt = `You are a senior performance marketing specialist who has managed millions in Meta/Instagram ad spend. You're reviewing a ChiChi Foods ad (chickpea protein hot cereal brand) for conversion optimization.
+    const prompt = `You are reviewing a ChiChi Foods ad (chickpea protein hot cereal) for Meta/Instagram performance.
 
-Here is the ad HTML:
+IMPORTANT CONTEXT: This is an HTML/CSS-only ad — no real photography is available. Judge it on what IS controllable: layout, typography, color usage, copy, CTA, visual hierarchy, and overall design quality. Do NOT penalize for lack of real product photos.
+
+Ad HTML:
 ${adHtml}
 
 CHANNEL: ${channel || "social media"}
 SIZE: ${adSize || "1080x1080"}
 
-Analyze this ad from a PAID PERFORMANCE perspective. Think about:
-- Does it stop the scroll? (visual hook)
-- Is there ONE clear message? (not 5 competing messages)
-- Is the CTA strong and clear?
-- Would this convert on Meta/Instagram?
-- Is the text readable at mobile size?
-- Is there social proof or urgency?
-- Does it follow the 20% text rule for Meta?
+Score honestly but fairly. A well-designed HTML-only ad with strong copy and layout CAN score 7-8. Reserve 9-10 for exceptional work. Score below 5 only for genuinely broken or unreadable ads.
 
-Be honest and specific. Don't sugarcoat — give real, actionable feedback that would improve ROAS.
+Evaluate:
+- Visual hook (does it grab attention?)
+- Message clarity (ONE clear message?)
+- CTA strength
+- Text readability at mobile size
+- Layout quality and visual hierarchy
+- Brand color usage
 
-Return ONLY valid JSON (no markdown fences):
+Return ONLY valid JSON:
 {
-  "score": <number 1-10>,
-  "verdict": "<one blunt sentence>",
-  "strengths": ["<specific strength 1>", "<specific strength 2>"],
-  "improvements": [
-    {
-      "issue": "<what's wrong>",
-      "fix": "<exactly what to change>",
-      "priority": "high" | "medium" | "low"
-    }
-  ],
+  "score": <1-10>,
+  "verdict": "<one sentence>",
+  "strengths": ["<strength>", "<strength>"],
+  "improvements": [{"issue": "<what>", "fix": "<how>", "priority": "high|medium|low"}],
   "hookScore": <1-10>,
   "ctaScore": <1-10>,
   "clarityScore": <1-10>,
   "visualScore": <1-10>,
-  "tips": ["<platform-specific tip>", "<tip 2>"]
+  "tips": ["<tip>"]
 }`;
 
     const response = await client.messages.create({
@@ -79,9 +71,6 @@ Return ONLY valid JSON (no markdown fences):
     return NextResponse.json(result);
   } catch (error) {
     console.error("Review ad error:", error);
-    return NextResponse.json(
-      { error: error.message || "Failed to review ad" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error.message || "Failed to review ad" }, { status: 500 });
   }
 }

@@ -1,9 +1,27 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { buildBrandPrompt, brandContext } from "@/lib/brand-context";
-import { buildDesignSystemPrompt } from "@/lib/design-system";
+import { QUALITY_GUIDELINES } from "@/lib/design-system";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function parseJSON(text) {
+  try { return JSON.parse(text); } catch {}
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (m) return JSON.parse(m[1].trim());
+  const o = text.match(/\{[\s\S]*\}/);
+  if (o) return JSON.parse(o[0]);
+  throw new Error("Could not parse AI response");
+}
+
+function getBrandColors() {
+  const list = [];
+  if (brandContext.colors?.primary)
+    Object.entries(brandContext.colors.primary).forEach(([n, h]) => list.push(`${n}: ${h}`));
+  if (brandContext.colors?.pairings)
+    Object.entries(brandContext.colors.pairings).forEach(([n, h]) => list.push(`${n}: ${h}`));
+  return list.join(", ");
+}
 
 export async function POST(request) {
   try {
@@ -14,114 +32,100 @@ export async function POST(request) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
     }
 
-    const brandColorsList = [];
-    if (brandContext.colors?.primary) {
-      Object.entries(brandContext.colors.primary).forEach(([name, hex]) => {
-        brandColorsList.push(`${name}: ${hex}`);
-      });
-    }
-    if (brandContext.colors?.pairings) {
-      Object.entries(brandContext.colors.pairings).forEach(([name, hex]) => {
-        brandColorsList.push(`${name}: ${hex}`);
-      });
-    }
-
     const product = brandContext.products?.find((p) => p.flavor === flavor);
 
-    const prompt = `You are a senior graphic designer at a top creative agency, recreating an ad for ChiChi Foods.
+    // ========== PASS 1: Generate the ad ==========
+    const generatePrompt = `You are recreating a reference ad for ChiChi Foods (chickpea protein hot cereal).
 
-BRAND CONTEXT:
-${buildBrandPrompt()}
+BRAND: ${brandContext.brand.name} — ${brandContext.brand.tagline} | ${brandContext.brand.website}
+BRAND COLORS (use ONLY these): ${getBrandColors()}
+FONTS: "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body.
+${product ? `PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
 
-AVAILABLE BRAND COLORS (use ONLY these): ${brandColorsList.join(", ")}
+${QUALITY_GUIDELINES}
 
-${buildDesignSystemPrompt()}
+CRITICAL LAYOUT RULES:
+- Count EXACTLY how many sections, boxes, columns, rows, images, and text blocks are in the reference.
+- Recreate that EXACT structure. If reference has 4 items in 1 row, make 4 items in 1 row — NOT 2x2.
+- If reference has a horizontal row of products, make a horizontal row. NOT a grid. NOT cards with descriptions.
+- Match the reference's proportions: what % of space goes to headline vs products vs footer.
+- Match text alignment (left/center/right) from the reference.
+- Replace reference brand colors with the closest ChiChi brand colors.
+- DO NOT add elements the reference doesn't have (no extra descriptions, no cards around products).
+- DO NOT remove elements the reference has.
+- If the reference has product images, use colored rectangles or simple shapes as placeholders — same size and position.
+${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nUse the user's EXACT text if they provided specific text content.` : ""}
 
-YOUR TASK:
-Look at this reference ad image and recreate its layout as HTML/CSS, rebranded for ChiChi Foods.
-The ad must be EXACTLY ${adWidth}px wide and ${adHeight}px tall.
+The ad must be exactly ${adWidth}x${adHeight}px. All styling inline. No <style> tags.
+Use {{token_name}} placeholders for text. ChiChi makes chickpea hot cereal, NOT oatmeal.
 
-REFERENCE RECREATION RULES:
-1. MATCH THE REFERENCE LAYOUT — same grid structure, same number of sections, same visual hierarchy, same spacing patterns. If it has 6 boxes in a 2x3 grid, make 6 boxes in a 2x3 grid. If it has a diagonal stripe, make a diagonal stripe.
-2. USE ONLY CHICHI BRAND COLORS listed above. Map the reference colors to the closest ChiChi brand colors. Do NOT use the reference's original colors.
-3. While matching the layout, ELEVATE the visual quality: add the polish techniques from the design rules (shadows, gradients, decorative elements, proper typography). Make it BETTER than the reference, not just a copy.
-4. The root <div> must be EXACTLY ${adWidth}px wide and ${adHeight}px tall with overflow:hidden and position:relative.
-5. ALL styling must be inline. No <style> tags, no CSS classes.
-6. Use {{token_name}} placeholders for ALL text content. Use descriptive names like {{headline}}, {{box_1_title}}, {{box_1_desc}}, {{cta}}, etc.
-7. DO NOT add product images, image tags, or image placeholders unless the reference CLEARLY features a photograph or illustration. Text-only ads should remain text-only.
-8. ChiChi makes CHICKPEA protein hot cereal, NOT oatmeal. Never say oatmeal.
-${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nCRITICAL: If the user provided specific text content, use their EXACT text as the field values. Do not rewrite it.` : ""}
-${product ? `\nFEATURED PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
+Return ONLY valid JSON:
+{"html": "<div style='width:${adWidth}px;height:${adHeight}px;...'>...</div>", "fields": {"token": "value"}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}`;
 
-Return ONLY valid JSON (no markdown fences, no explanation):
-{
-  "design_rationale": {
-    "aesthetic": "description of visual style",
-    "layout_technique": "what makes layout interesting",
-    "color_strategy": "which brand colors and how",
-    "polish_techniques": ["technique1", "technique2", "technique3"]
-  },
-  "html": "<div style='width:${adWidth}px;height:${adHeight}px;position:relative;overflow:hidden;...'>...{{token}} placeholders...</div>",
-  "fields": {
-    "token_name": "actual text value"
-  },
-  "backgroundColor": "#hex",
-  "textColor": "#hex",
-  "accentColor": "#hex"
-}`;
-
-    const response = await client.messages.create({
+    const pass1 = await client.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 6000,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: mediaType || "image/png",
-                data: imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: prompt,
-            },
-          ],
-        },
-      ],
+      max_tokens: 4096,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType || "image/png", data: imageBase64 } },
+          { type: "text", text: generatePrompt },
+        ],
+      }],
     });
 
-    const text = response.content[0].text;
-    let result;
-    try {
-      result = JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        result = JSON.parse(jsonMatch[1].trim());
-      } else {
-        const objMatch = text.match(/\{[\s\S]*\}/);
-        if (objMatch) {
-          result = JSON.parse(objMatch[0]);
-        } else {
-          throw new Error("Could not parse AI response");
-        }
-      }
-    }
+    let result = parseJSON(pass1.content[0].text);
+    if (!result.html || !result.fields) throw new Error("AI response missing html or fields");
 
-    if (!result.html || !result.fields) {
-      throw new Error("AI response missing html or fields");
+    // ========== PASS 2: Self-review and fix ==========
+    // Render the HTML with fields filled in for review
+    let rendered = result.html;
+    Object.entries(result.fields).forEach(([k, v]) => {
+      rendered = rendered.replaceAll(`{{${k}}}`, v || "");
+    });
+
+    const reviewPrompt = `You are reviewing an ad you just created. Here is the generated HTML:
+
+${rendered}
+
+And here is the reference image it was supposed to match.
+
+Score these 1-10:
+1. LAYOUT MATCH: Does the HTML match the reference's structure exactly? Same number of columns, rows, sections, same proportions?
+2. VISUAL QUALITY: Does it look professional? Good typography, spacing, color usage?
+3. TEXT READABILITY: Is all text properly sized, not cramped, not overflowing?
+
+If ANY score is below 7, you MUST rewrite the HTML to fix the issues. The #1 priority is matching the reference layout structure exactly.
+
+Return ONLY valid JSON:
+{"scores": {"layout": N, "quality": N, "readability": N}, "fixed": true/false, "html": "...(improved HTML with {{token}} placeholders)...", "fields": {...}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}
+
+If no fixes needed, return the same html/fields unchanged with "fixed": false.`;
+
+    try {
+      const pass2 = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType || "image/png", data: imageBase64 } },
+            { type: "text", text: reviewPrompt },
+          ],
+        }],
+      });
+
+      const review = parseJSON(pass2.content[0].text);
+      if (review.fixed && review.html && review.fields) {
+        result = { html: review.html, fields: review.fields, backgroundColor: review.backgroundColor || result.backgroundColor, textColor: review.textColor || result.textColor, accentColor: review.accentColor || result.accentColor };
+      }
+    } catch (reviewErr) {
+      console.error("Self-review failed (using pass 1 result):", reviewErr.message);
     }
 
     return NextResponse.json(result);
   } catch (error) {
     console.error("Recreate error:", error);
-    return NextResponse.json(
-      { error: error.message || "Failed to recreate ad" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error.message || "Failed to recreate ad" }, { status: 500 });
   }
 }
