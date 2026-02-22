@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { buildBrandPrompt, brandContext } from "@/lib/brand-context";
+import { buildDesignSystemPrompt } from "@/lib/design-system";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -27,43 +28,42 @@ export async function POST(request) {
 
     const product = brandContext.products?.find((p) => p.flavor === flavor);
 
-    const prompt = `You are an expert graphic designer recreating an ad for ChiChi Foods.
+    const prompt = `You are a senior graphic designer at a top creative agency, recreating an ad for ChiChi Foods.
 
 BRAND CONTEXT:
 ${buildBrandPrompt()}
 
-YOUR TASK:
-Look at this reference ad image and recreate its EXACT layout as HTML/CSS, but rebranded for ChiChi Foods.
+AVAILABLE BRAND COLORS (use ONLY these): ${brandColorsList.join(", ")}
 
-STRICT RULES:
-1. RECREATE THE EXACT LAYOUT — same grid structure, same number of sections, same visual hierarchy, same spacing patterns. If it has 6 boxes in a 2x3 grid, make 6 boxes in a 2x3 grid. If it has a diagonal stripe, make a diagonal stripe. Be precise.
-2. USE ONLY CHICHI BRAND COLORS: ${brandColorsList.join(", ")}. Map the reference colors to the closest ChiChi brand colors. Do NOT use the reference's original colors.
-3. FONTS: "Decoy, serif" for bold headlines/titles, "Questa Sans, sans-serif" for body/description text.
+${buildDesignSystemPrompt()}
+
+YOUR TASK:
+Look at this reference ad image and recreate its layout as HTML/CSS, rebranded for ChiChi Foods.
+The ad must be EXACTLY ${adWidth}px wide and ${adHeight}px tall.
+
+REFERENCE RECREATION RULES:
+1. MATCH THE REFERENCE LAYOUT — same grid structure, same number of sections, same visual hierarchy, same spacing patterns. If it has 6 boxes in a 2x3 grid, make 6 boxes in a 2x3 grid. If it has a diagonal stripe, make a diagonal stripe.
+2. USE ONLY CHICHI BRAND COLORS listed above. Map the reference colors to the closest ChiChi brand colors. Do NOT use the reference's original colors.
+3. While matching the layout, ELEVATE the visual quality: add the polish techniques from the design rules (shadows, gradients, decorative elements, proper typography). Make it BETTER than the reference, not just a copy.
 4. The root <div> must be EXACTLY ${adWidth}px wide and ${adHeight}px tall with overflow:hidden and position:relative.
 5. ALL styling must be inline. No <style> tags, no CSS classes.
-6. Use {{token_name}} placeholders for ALL text content. Use descriptive names like {{headline}}, {{box_1_title}}, {{box_1_desc}}, {{box_2_title}}, {{box_2_desc}}, {{cta}}, etc.
+6. Use {{token_name}} placeholders for ALL text content. Use descriptive names like {{headline}}, {{box_1_title}}, {{box_1_desc}}, {{cta}}, etc.
 7. DO NOT add product images, image tags, or image placeholders unless the reference CLEARLY features a photograph or illustration. Text-only ads should remain text-only.
 8. ChiChi makes CHICKPEA protein hot cereal, NOT oatmeal. Never say oatmeal.
-9. Make borders, spacing, and alignment look clean and professional.
-10. If the reference uses rounded corners, shadows, gradients, or decorative elements — recreate those.
-
-AD PERFORMANCE OPTIMIZATION (apply these automatically while staying faithful to the reference layout):
-- Ensure ONE clear visual hook that grabs attention instantly — bold headline, striking color contrast, or dramatic typography
-- Text must be readable on mobile — minimum 14px for body, 24px+ for headlines at 1080px width
-- CTA should be prominent, action-oriented, and high-contrast against its background
-- Respect the ~20% text rule for Meta/Instagram ads — balance text with visual breathing room
-- Strong visual hierarchy: hook → benefit → CTA
-- Use whitespace intentionally — avoid overcrowding sections
-- Brand name should be visible but not dominating
-Do NOT change the reference layout structure — just make it perform better within that structure.
-${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nCRITICAL: If the user provided specific text content for sections, use their EXACT text as the field values. Do not rewrite what they gave you.` : ""}
+${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nCRITICAL: If the user provided specific text content, use their EXACT text as the field values. Do not rewrite it.` : ""}
 ${product ? `\nFEATURED PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
 
-Return ONLY valid JSON (no markdown fences, no explanation, no comments):
+Return ONLY valid JSON (no markdown fences, no explanation):
 {
-  "html": "<div style='width:${adWidth}px;height:${adHeight}px;position:relative;overflow:hidden;...'>...{{token}} placeholders for all text...</div>",
+  "design_rationale": {
+    "aesthetic": "description of visual style",
+    "layout_technique": "what makes layout interesting",
+    "color_strategy": "which brand colors and how",
+    "polish_techniques": ["technique1", "technique2", "technique3"]
+  },
+  "html": "<div style='width:${adWidth}px;height:${adHeight}px;position:relative;overflow:hidden;...'>...{{token}} placeholders...</div>",
   "fields": {
-    "token_name": "actual text value for each token used in html"
+    "token_name": "actual text value"
   },
   "backgroundColor": "#hex",
   "textColor": "#hex",
@@ -72,7 +72,7 @@ Return ONLY valid JSON (no markdown fences, no explanation, no comments):
 
     const response = await client.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
+      max_tokens: 6000,
       messages: [
         {
           role: "user",
@@ -99,12 +99,10 @@ Return ONLY valid JSON (no markdown fences, no explanation, no comments):
     try {
       result = JSON.parse(text);
     } catch {
-      // Try extracting from markdown code block
       const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (jsonMatch) {
         result = JSON.parse(jsonMatch[1].trim());
       } else {
-        // Try to find a JSON object
         const objMatch = text.match(/\{[\s\S]*\}/);
         if (objMatch) {
           result = JSON.parse(objMatch[0]);

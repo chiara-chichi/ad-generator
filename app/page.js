@@ -7,6 +7,7 @@ import { saveAs } from "file-saver";
 import { adSizes, getAdSize } from "@/lib/ad-sizes";
 import { brandContext } from "@/lib/brand-context";
 import { supabase } from "@/lib/supabase";
+import { processImage } from "@/lib/image-utils";
 
 const FLAVORS = [
   "All / General",
@@ -111,21 +112,31 @@ export default function Home() {
     }
   }, []);
 
-  // Dropzone
-  const onDropReference = useCallback((files) => {
+  // Dropzone — accepts HEIC, converts + compresses automatically
+  const onDropReference = useCallback(async (files) => {
     const file = files[0];
     if (!file) return;
-    setReferenceImage(file);
-    const reader = new FileReader();
-    reader.onload = () => setReferencePreview(reader.result);
-    reader.readAsDataURL(file);
+    try {
+      const processed = await processImage(file, 4 * 1024 * 1024, 2048);
+      setReferenceImage(processed);
+      const reader = new FileReader();
+      reader.onload = () => setReferencePreview(reader.result);
+      reader.readAsDataURL(processed);
+    } catch (err) {
+      console.error("Image processing failed:", err);
+      // Fall back to raw file
+      setReferenceImage(file);
+      const reader = new FileReader();
+      reader.onload = () => setReferencePreview(reader.result);
+      reader.readAsDataURL(file);
+    }
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: onDropReference,
-    accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp"] },
+    accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"] },
     maxFiles: 1,
-    maxSize: 10 * 1024 * 1024,
+    maxSize: 50 * 1024 * 1024, // allow big files — we compress client-side
   });
 
   // Render HTML with tokens substituted
@@ -638,7 +649,7 @@ export default function Home() {
                 </svg>
               </div>
               <p className="text-chocolate/80 font-medium text-lg">Drop your reference ad here</p>
-              <p className="text-chocolate/40 text-sm mt-1">PNG, JPG, WebP — max 10MB</p>
+              <p className="text-chocolate/40 text-sm mt-1">PNG, JPG, WebP, HEIC — any size, auto-compressed</p>
             </div>
           )}
         </div>
