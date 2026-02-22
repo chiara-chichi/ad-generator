@@ -56,7 +56,7 @@ TECHNICAL RULES:
 - Output a single <div> element with inline styles, exactly ${adWidth}x${adHeight}px
 - All styles must be inline (no <style> tags, no CSS classes)
 - Use overflow:hidden on text containers
-- For fonts, match the VISUAL STYLE of the reference (bold weight, size, serif vs sans-serif). Use web-safe fonts (Georgia, Arial Black, Impact, Trebuchet MS, etc.) or Google Fonts via <link> in the HTML. Pick fonts that look like the reference — do NOT use "Decoy" or "Questa Sans" as they are not loaded.
+- Fonts: Use "Decoy", serif for headlines (font-weight: 700 or 900 for bold/ultra-black) and "Questa Sans", sans-serif for body text. These fonts are loaded in the app.
 ${hasAssets
   ? `- For product images, use the provided <img> URLs with crossorigin="anonymous"`
   : `- For product images/packaging, use colored <div> shapes as placeholders (same size and position as in the reference)`}

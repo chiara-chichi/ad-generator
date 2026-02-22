@@ -25,12 +25,51 @@
   --font-accent: "Tomarik Extrovert", serif;
 }
 
+/* Decoy font family — all weights */
 @font-face {
   font-family: "Decoy";
-  src: url("/fonts/Decoy.woff2") format("woff2"),
-       url("/fonts/Decoy.woff") format("woff"),
-       url("/fonts/Decoy.otf") format("opentype"),
-       url("/fonts/Decoy.ttf") format("truetype");
+  src: url("/fonts/Decoy-Light.otf") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Decoy";
+  src: url("/fonts/Decoy-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Decoy";
+  src: url("/fonts/Decoy-Medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Decoy";
+  src: url("/fonts/Decoy-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Decoy";
+  src: url("/fonts/Decoy-UltraBlack.otf") format("opentype");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Questa Sans font family */
+@font-face {
+  font-family: "Questa Sans";
+  src: url("/fonts/QuestaSans-Regular.otf") format("opentype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -38,33 +77,8 @@
 
 @font-face {
   font-family: "Questa Sans";
-  src: url("/fonts/QuestaSans.woff2") format("woff2"),
-       url("/fonts/QuestaSans.woff") format("woff"),
-       url("/fonts/QuestaSans.otf") format("opentype"),
-       url("/fonts/QuestaSans.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Questa Slab";
-  src: url("/fonts/QuestaSlab.woff2") format("woff2"),
-       url("/fonts/QuestaSlab.woff") format("woff"),
-       url("/fonts/QuestaSlab.otf") format("opentype"),
-       url("/fonts/QuestaSlab.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Tomarik Extrovert";
-  src: url("/fonts/TomarikExtrovert.woff2") format("woff2"),
-       url("/fonts/TomarikExtrovert.woff") format("woff"),
-       url("/fonts/TomarikExtrovert.otf") format("opentype"),
-       url("/fonts/TomarikExtrovert.ttf") format("truetype");
-  font-weight: 400;
+  src: url("/fonts/QuestaSans-Bold.otf") format("opentype");
+  font-weight: 700;
   font-style: normal;
   font-display: swap;
 }
