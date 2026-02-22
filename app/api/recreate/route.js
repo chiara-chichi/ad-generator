@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
-import { buildBrandPrompt, brandContext } from "@/lib/brand-context";
+import { brandContext } from "@/lib/brand-context";
 import { QUALITY_GUIDELINES } from "@/lib/design-system";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -34,94 +34,73 @@ export async function POST(request) {
 
     const product = brandContext.products?.find((p) => p.flavor === flavor);
 
-    // ========== PASS 1: Generate the ad ==========
-    const generatePrompt = `You are recreating a reference ad for ChiChi Foods (chickpea protein hot cereal).
+    const prompt = `You are recreating a reference ad for ChiChi Foods (chickpea protein hot cereal).
 
-BRAND: ${brandContext.brand.name} — ${brandContext.brand.tagline} | ${brandContext.brand.website}
-BRAND COLORS (use ONLY these): ${getBrandColors()}
-FONTS: "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body.
-${product ? `PRODUCT: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
+BEFORE GENERATING ANY HTML, study the reference image carefully in your thinking:
+- What is the background (solid color, gradient, texture)?
+- How many distinct vertical sections are there? What % of height does each take?
+- In each section, how many items are arranged? In a row or column?
+- What is the text alignment (left, center, right) for each text element?
+- What colors are used for background, text, accents, and any colored blocks?
+- Where are product images/shapes positioned and how large are they?
+- What is the overall visual hierarchy?
+
+YOUR #1 GOAL: The generated HTML must look like the reference — same structure, same proportions, same spacing patterns, same number of elements.
+
+WHAT TO KEEP IDENTICAL FROM THE REFERENCE:
+- Layout structure (exact number of rows, columns, sections)
+- Proportions (% of space allocated to each section)
+- Text alignment and positioning (left/center/right)
+- Visual hierarchy and flow
+- Spacing patterns and padding ratios
+- Number of product items and their arrangement (if 4 items in a row → 4 items in a row, NOT 2x2)
+- Shape and size of colored blocks, badges, buttons
+
+WHAT TO SWAP FOR CHICHI:
+- Brand name/text → ChiChi Foods / chickpea protein hot cereal
+- Colors → use ChiChi brand colors: ${getBrandColors()}
+- Fonts → "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body
+- Product names → ChiChi flavors (Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar)
+${product ? `- Featured product: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
+
+DO NOT:
+- Add elements that are NOT in the reference (no extra text, no extra badges, no descriptions)
+- Remove elements that ARE in the reference
+- Change item arrangements (a horizontal row stays a horizontal row — never turn it into a grid)
+- Add real product images — use colored rectangles/shapes as placeholders, same size and position as reference
+- Reorganize or "improve" the layout — copy it faithfully
+${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nFollow the user's specific instructions, using their exact text if they provided copy.` : ""}
 
 ${QUALITY_GUIDELINES}
 
-CRITICAL LAYOUT RULES:
-- Count EXACTLY how many sections, boxes, columns, rows, images, and text blocks are in the reference.
-- Recreate that EXACT structure. If reference has 4 items in 1 row, make 4 items in 1 row — NOT 2x2.
-- If reference has a horizontal row of products, make a horizontal row. NOT a grid. NOT cards with descriptions.
-- Match the reference's proportions: what % of space goes to headline vs products vs footer.
-- Match text alignment (left/center/right) from the reference.
-- Replace reference brand colors with the closest ChiChi brand colors.
-- DO NOT add elements the reference doesn't have (no extra descriptions, no cards around products).
-- DO NOT remove elements the reference has.
-- If the reference has product images, use colored rectangles or simple shapes as placeholders — same size and position.
-${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nUse the user's EXACT text if they provided specific text content.` : ""}
+TECHNICAL REQUIREMENTS:
+- Size: exactly ${adWidth}x${adHeight}px
+- All styling must be inline. No <style> tags.
+- Use {{token_name}} placeholders for ALL text content
+- ChiChi makes chickpea hot cereal, NOT oatmeal
 
-The ad must be exactly ${adWidth}x${adHeight}px. All styling inline. No <style> tags.
-Use {{token_name}} placeholders for text. ChiChi makes chickpea hot cereal, NOT oatmeal.
-
-Return ONLY valid JSON:
+Return ONLY valid JSON (no markdown, no explanation):
 {"html": "<div style='width:${adWidth}px;height:${adHeight}px;...'>...</div>", "fields": {"token": "value"}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}`;
 
-    const pass1 = await client.messages.create({
+    const response = await client.messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
+      max_tokens: 16000,
+      thinking: { type: "enabled", budget_tokens: 5000 },
       messages: [{
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mediaType || "image/png", data: imageBase64 } },
-          { type: "text", text: generatePrompt },
+          { type: "text", text: prompt },
         ],
       }],
     });
 
-    let result = parseJSON(pass1.content[0].text);
+    // Extract text block (skip thinking blocks)
+    const textBlock = response.content.find(b => b.type === "text");
+    if (!textBlock) throw new Error("No text response from AI");
+
+    const result = parseJSON(textBlock.text);
     if (!result.html || !result.fields) throw new Error("AI response missing html or fields");
-
-    // ========== PASS 2: Self-review and fix ==========
-    // Render the HTML with fields filled in for review
-    let rendered = result.html;
-    Object.entries(result.fields).forEach(([k, v]) => {
-      rendered = rendered.replaceAll(`{{${k}}}`, v || "");
-    });
-
-    const reviewPrompt = `You are reviewing an ad you just created. Here is the generated HTML:
-
-${rendered}
-
-And here is the reference image it was supposed to match.
-
-Score these 1-10:
-1. LAYOUT MATCH: Does the HTML match the reference's structure exactly? Same number of columns, rows, sections, same proportions?
-2. VISUAL QUALITY: Does it look professional? Good typography, spacing, color usage?
-3. TEXT READABILITY: Is all text properly sized, not cramped, not overflowing?
-
-If ANY score is below 7, you MUST rewrite the HTML to fix the issues. The #1 priority is matching the reference layout structure exactly.
-
-Return ONLY valid JSON:
-{"scores": {"layout": N, "quality": N, "readability": N}, "fixed": true/false, "html": "...(improved HTML with {{token}} placeholders)...", "fields": {...}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}
-
-If no fixes needed, return the same html/fields unchanged with "fixed": false.`;
-
-    try {
-      const pass2 = await client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4096,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType || "image/png", data: imageBase64 } },
-            { type: "text", text: reviewPrompt },
-          ],
-        }],
-      });
-
-      const review = parseJSON(pass2.content[0].text);
-      if (review.fixed && review.html && review.fields) {
-        result = { html: review.html, fields: review.fields, backgroundColor: review.backgroundColor || result.backgroundColor, textColor: review.textColor || result.textColor, accentColor: review.accentColor || result.accentColor };
-      }
-    } catch (reviewErr) {
-      console.error("Self-review failed (using pass 1 result):", reviewErr.message);
-    }
 
     return NextResponse.json(result);
   } catch (error) {
