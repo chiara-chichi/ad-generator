@@ -50,31 +50,17 @@ export async function POST(request) {
 
     // ============ STEP 1: Generate raw HTML (layout-focused) ============
 
-    const systemMessage = `You are an expert HTML/CSS developer who recreates advertisement layouts with pixel-perfect accuracy.
-
-TECHNICAL RULES:
-- Output a single <div> element with inline styles, exactly ${adWidth}x${adHeight}px
-- All styles must be inline (no <style> tags, no CSS classes)
-- Use overflow:hidden on text containers
-- Fonts: Use "Decoy", serif for headlines (font-weight: 700 or 900 for bold/ultra-black) and "Questa Sans", sans-serif for body text. These fonts are loaded in the app.
-${hasAssets
-  ? `- For product images, use the provided <img> URLs with crossorigin="anonymous"`
-  : `- For product images/packaging, use colored <div> shapes as placeholders (same size and position as in the reference)`}
-- Write the actual text content directly in the HTML (do NOT use placeholder tokens like {{...}})
-
-OUTPUT: Return ONLY the raw HTML. No JSON wrapping, no markdown fences, no explanation.`;
+    const systemMessage = `You recreate ads as HTML. Output ${adWidth}x${adHeight}px. Inline styles only. No <style> tags. Fonts: "Decoy", serif for headlines, "Questa Sans", sans-serif for body. Return ONLY the HTML, no markdown fences.`;
 
     const assetLines = hasAssets
-      ? `\n\nBrand asset images to use:\n${assets.map(a => `- ${a.category || "product"}: <img src="${a.url}" crossorigin="anonymous" />`).join("\n")}`
+      ? `\nUse these product images: ${assets.map(a => `<img src="${a.url}" crossorigin="anonymous" />`).join(" ")}`
       : "";
 
-    const userMessage = `Recreate this ad for ChiChi Foods (chickpea protein hot cereal, NOT oatmeal).
+    const userMessage = `Recreate this exact ad for ChiChi Foods (chickpea protein hot cereal). Same layout, same proportions, same design — just swap the brand.
 
-Keep the EXACT same layout, proportions, and visual structure. Just swap the branding:
-- Brand: ChiChi | chickpeaoats.com
-- Colors: ${getBrandColors()}
-- Flavors: Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar
-${product ? `- Product: ${product.name} (${product.protein} protein)` : ""}${assetLines}${userNotes ? `\n\nNotes: "${userNotes}"` : ""}`;
+ChiChi brand colors: ${getBrandColors()}
+Flavors: Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar
+${product ? `Product: ${product.name} (${product.protein} protein)` : ""}${assetLines}${userNotes ? `\n${userNotes}` : ""}`;
 
     const pass1 = await client.messages.create({
       model: "claude-sonnet-4-20250514",
