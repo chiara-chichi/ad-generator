@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { brandContext } from "@/lib/brand-context";
-import { QUALITY_GUIDELINES } from "@/lib/design-system";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -34,48 +33,18 @@ export async function POST(request) {
 
     const product = brandContext.products?.find((p) => p.flavor === flavor);
 
-    const prompt = `You are recreating a reference ad for ChiChi Foods (chickpea protein hot cereal).
+    const prompt = `Look at this reference ad. Recreate it as a ChiChi Foods ad (chickpea protein hot cereal, NOT oatmeal).
 
-IN YOUR THINKING, analyze the reference image precisely:
-1. Measure each section's height as a % of total (e.g., "header area = 60%, product row = 35%, footer = 5%")
-2. Count exact elements: how many text blocks, badges, product items, buttons
-3. Note each element's position, size relative to the ad, and alignment
-4. Note what text each element contains (you'll swap it for ChiChi text)
-
-YOUR #1 RULE: The HTML must match the reference's proportions and structure EXACTLY.
-
-PROPORTIONS ARE CRITICAL:
-- If the reference's product section takes ~35% of the height, yours must too. Use percentage heights or calc().
-- If the headline area takes ~55% of space, yours must too. Don't compress or expand sections.
-- If there's empty space in the reference, keep that empty space. Don't fill it with extra content.
-- The outer container is exactly ${adWidth}x${adHeight}px — use % heights inside to match reference proportions.
-
-STRUCTURE RULES:
-- Same number of sections, same order, same arrangement
-- If 4 items in a horizontal row → use display:flex with 4 equal children. Never stack or grid.
-- If reference has a small badge/circle element, make yours the same relative size and position
-- If reference has a CTA button at the bottom, include one at the bottom
-
-ONLY SWAP THESE FOR CHICHI:
-- Brand name → ChiChi
-- Product type → chickpea protein hot cereal (NOT oatmeal)
-- Colors → ChiChi brand colors: ${getBrandColors()}
+Keep the EXACT same layout, proportions, and structure. Just swap the branding:
+- Brand → ChiChi | chickpeaoats.com
+- Colors → ${getBrandColors()}
 - Fonts → "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body
-- Flavor names → Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar
-${product ? `- Featured product: ${product.name} (${product.protein} protein)` : ""}
+- Flavors → Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar
+${product ? `- Product: ${product.name} (${product.protein} protein)` : ""}
+${userNotes ? `\nUser notes: "${userNotes}"` : ""}
 
-DO NOT ADD OR CHANGE:
-- Do NOT add text/elements that aren't in the reference (no subtitles, no descriptions, no extra labels)
-- Do NOT remove elements that are in the reference
-- Do NOT change the layout arrangement (rows stay rows, columns stay columns)
-- Do NOT use <img> tags — use colored rectangles as product placeholders, same size/position as reference
-- If a product in the reference only has a name below it, yours should ONLY have a name — no extra subtitle
-${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nFollow the user's specific instructions.` : ""}
-
-TECHNICAL:
-- Size: ${adWidth}x${adHeight}px. All inline styles. No <style> tags.
-- Use {{token_name}} for all text. Fonts: "Decoy, serif" headlines, "Questa Sans, sans-serif" body.
-- Headlines should be big and bold. Give text breathing room. CTA high-contrast.
+Output exactly ${adWidth}x${adHeight}px. All inline styles. No <style> tags. No <img> tags — use colored shapes as product placeholders.
+Use {{token_name}} for all text content.
 
 Return ONLY valid JSON:
 {"html": "<div style='width:${adWidth}px;height:${adHeight}px;...'>...</div>", "fields": {"token": "value"}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}`;
