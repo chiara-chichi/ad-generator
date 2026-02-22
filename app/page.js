@@ -220,7 +220,12 @@ export default function Home() {
           mediaType,
           adWidth: size.width,
           adHeight: size.height,
-          userNotes: (referenceNotes || "") + buildAssetPrompt(),
+          userNotes: referenceNotes || "",
+          assets: selectedAssets.map((a) => ({
+            category: a.category,
+            url: a.public_url,
+            name: a.name,
+          })),
           flavor: flavor === "All / General" ? null : flavor,
           channel,
         }),
