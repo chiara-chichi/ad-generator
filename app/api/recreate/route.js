@@ -36,50 +36,48 @@ export async function POST(request) {
 
     const prompt = `You are recreating a reference ad for ChiChi Foods (chickpea protein hot cereal).
 
-BEFORE GENERATING ANY HTML, study the reference image carefully in your thinking:
-- What is the background (solid color, gradient, texture)?
-- How many distinct vertical sections are there? What % of height does each take?
-- In each section, how many items are arranged? In a row or column?
-- What is the text alignment (left, center, right) for each text element?
-- What colors are used for background, text, accents, and any colored blocks?
-- Where are product images/shapes positioned and how large are they?
-- What is the overall visual hierarchy?
+IN YOUR THINKING, analyze the reference image precisely:
+1. Measure each section's height as a % of total (e.g., "header area = 60%, product row = 35%, footer = 5%")
+2. Count exact elements: how many text blocks, badges, product items, buttons
+3. Note each element's position, size relative to the ad, and alignment
+4. Note what text each element contains (you'll swap it for ChiChi text)
 
-YOUR #1 GOAL: The generated HTML must look like the reference — same structure, same proportions, same spacing patterns, same number of elements.
+YOUR #1 RULE: The HTML must match the reference's proportions and structure EXACTLY.
 
-WHAT TO KEEP IDENTICAL FROM THE REFERENCE:
-- Layout structure (exact number of rows, columns, sections)
-- Proportions (% of space allocated to each section)
-- Text alignment and positioning (left/center/right)
-- Visual hierarchy and flow
-- Spacing patterns and padding ratios
-- Number of product items and their arrangement (if 4 items in a row → 4 items in a row, NOT 2x2)
-- Shape and size of colored blocks, badges, buttons
+PROPORTIONS ARE CRITICAL:
+- If the reference's product section takes ~35% of the height, yours must too. Use percentage heights or calc().
+- If the headline area takes ~55% of space, yours must too. Don't compress or expand sections.
+- If there's empty space in the reference, keep that empty space. Don't fill it with extra content.
+- The outer container is exactly ${adWidth}x${adHeight}px — use % heights inside to match reference proportions.
 
-WHAT TO SWAP FOR CHICHI:
-- Brand name/text → ChiChi Foods / chickpea protein hot cereal
-- Colors → use ChiChi brand colors: ${getBrandColors()}
+STRUCTURE RULES:
+- Same number of sections, same order, same arrangement
+- If 4 items in a horizontal row → use display:flex with 4 equal children. Never stack or grid.
+- If reference has a small badge/circle element, make yours the same relative size and position
+- If reference has a CTA button at the bottom, include one at the bottom
+
+ONLY SWAP THESE FOR CHICHI:
+- Brand name → ChiChi
+- Product type → chickpea protein hot cereal (NOT oatmeal)
+- Colors → ChiChi brand colors: ${getBrandColors()}
 - Fonts → "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body
-- Product names → ChiChi flavors (Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar)
-${product ? `- Featured product: ${product.name} — ${product.keyBenefit} (${product.protein} protein)` : ""}
+- Flavor names → Peanut Butter Chip, Apple Cinnamon, Dark Chocolate, Maple Brown Sugar
+${product ? `- Featured product: ${product.name} (${product.protein} protein)` : ""}
 
-DO NOT:
-- Add elements that are NOT in the reference (no extra text, no extra badges, no descriptions)
-- Remove elements that ARE in the reference
-- Change item arrangements (a horizontal row stays a horizontal row — never turn it into a grid)
-- Add real product images — use colored rectangles/shapes as placeholders, same size and position as reference
-- Reorganize or "improve" the layout — copy it faithfully
-${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nFollow the user's specific instructions, using their exact text if they provided copy.` : ""}
+DO NOT ADD OR CHANGE:
+- Do NOT add text/elements that aren't in the reference (no subtitles, no descriptions, no extra labels)
+- Do NOT remove elements that are in the reference
+- Do NOT change the layout arrangement (rows stay rows, columns stay columns)
+- Do NOT use <img> tags — use colored rectangles as product placeholders, same size/position as reference
+- If a product in the reference only has a name below it, yours should ONLY have a name — no extra subtitle
+${userNotes ? `\nUSER DIRECTION: "${userNotes}"\nFollow the user's specific instructions.` : ""}
 
-${QUALITY_GUIDELINES}
+TECHNICAL:
+- Size: ${adWidth}x${adHeight}px. All inline styles. No <style> tags.
+- Use {{token_name}} for all text. Fonts: "Decoy, serif" headlines, "Questa Sans, sans-serif" body.
+- Headlines should be big and bold. Give text breathing room. CTA high-contrast.
 
-TECHNICAL REQUIREMENTS:
-- Size: exactly ${adWidth}x${adHeight}px
-- All styling must be inline. No <style> tags.
-- Use {{token_name}} placeholders for ALL text content
-- ChiChi makes chickpea hot cereal, NOT oatmeal
-
-Return ONLY valid JSON (no markdown, no explanation):
+Return ONLY valid JSON:
 {"html": "<div style='width:${adWidth}px;height:${adHeight}px;...'>...</div>", "fields": {"token": "value"}, "backgroundColor": "#hex", "textColor": "#hex", "accentColor": "#hex"}`;
 
     const response = await client.messages.create({
