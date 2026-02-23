@@ -1,7 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let _client;
+function getClient() {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
+  return _client;
+}
 
 export async function POST(request) {
   try {
@@ -11,7 +15,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
     }
 
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2000,
       messages: [

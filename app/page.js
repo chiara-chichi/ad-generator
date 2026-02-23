@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
-import { toCanvas } from "html-to-image";
 import { saveAs } from "file-saver";
 import { adSizes, getAdSize } from "@/lib/ad-sizes";
 import { brandContext } from "@/lib/brand-context";
@@ -17,6 +16,7 @@ const FLAVORS = [
 function formatFieldName(key) {
   return key
     .replace(/_/g, " ")
+    .replace(/\./g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -39,12 +39,13 @@ export default function Home() {
   const [flavor, setFlavor] = useState("All / General");
   const [channel, setChannel] = useState("social");
 
-  // AI-generated ad
-  const [generatedHtml, setGeneratedHtml] = useState(null);
-  const [fields, setFields] = useState({});
-  const [backgroundColor, setBackgroundColor] = useState("#fffbec");
-  const [textColor, setTextColor] = useState("#4b1c10");
-  const [accentColor, setAccentColor] = useState("#f0615a");
+  // Creatomate-generated ad
+  const [renderUrl, setRenderUrl] = useState(null);
+  const [templateId, setTemplateId] = useState(null);
+  const [templateName, setTemplateName] = useState(null);
+  const [modifications, setModifications] = useState({});
+  const [editableFields, setEditableFields] = useState({});
+  const [rendering, setRendering] = useState(false);
 
   // NL editing
   const [editInstruction, setEditInstruction] = useState("");
@@ -64,7 +65,6 @@ export default function Home() {
   // Export
   const [exporting, setExporting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const adPreviewRef = useRef(null);
 
   // Load brand assets
   useEffect(() => {
@@ -83,28 +83,29 @@ export default function Home() {
         if (raw) {
           const ad = JSON.parse(raw);
           localStorage.removeItem("editAd");
-          if (ad.generatedHtml) {
-            setGeneratedHtml(ad.generatedHtml);
-            setFields(ad.fields || {});
-            if (ad.backgroundColor) setBackgroundColor(ad.backgroundColor);
-            if (ad.textColor) setTextColor(ad.textColor);
-            if (ad.accentColor) setAccentColor(ad.accentColor);
-            if (ad.flavor) setFlavor(ad.flavor);
-            if (ad.channel) setChannel(ad.channel);
-            if (ad.adSize) {
-              const match = ad.adSize.match(/(\d+)x(\d+)/);
-              if (match) {
-                const found = adSizes.find(
-                  (s) =>
-                    s.width === parseInt(match[1]) &&
-                    s.height === parseInt(match[2])
-                );
-                if (found) setAdSizeId(found.id);
-              }
-            }
-            setFlow("edit");
-            window.history.replaceState({}, "", "/");
+
+          if (ad.renderEngine === "creatomate") {
+            setRenderUrl(ad.renderUrl);
+            setTemplateId(ad.templateId);
+            setModifications(ad.modifications || {});
+            setEditableFields(ad.editableFields || {});
           }
+
+          if (ad.flavor) setFlavor(ad.flavor);
+          if (ad.channel) setChannel(ad.channel);
+          if (ad.adSize) {
+            const match = ad.adSize.match(/(\d+)x(\d+)/);
+            if (match) {
+              const found = adSizes.find(
+                (s) =>
+                  s.width === parseInt(match[1]) &&
+                  s.height === parseInt(match[2])
+              );
+              if (found) setAdSizeId(found.id);
+            }
+          }
+          setFlow("edit");
+          window.history.replaceState({}, "", "/");
         }
       } catch (err) {
         console.error("Failed to load ad from gallery:", err);
@@ -124,7 +125,6 @@ export default function Home() {
       reader.readAsDataURL(processed);
     } catch (err) {
       console.error("Image processing failed:", err);
-      // Fall back to raw file
       setReferenceImage(file);
       const reader = new FileReader();
       reader.onload = () => setReferencePreview(reader.result);
@@ -136,20 +136,8 @@ export default function Home() {
     onDrop: onDropReference,
     accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"] },
     maxFiles: 1,
-    maxSize: 50 * 1024 * 1024, // allow big files — we compress client-side
+    maxSize: 50 * 1024 * 1024,
   });
-
-  // Render HTML with tokens substituted
-  function renderAd(htmlOverride, fieldsOverride) {
-    const h = htmlOverride || generatedHtml;
-    const f = fieldsOverride || fields;
-    if (!h) return "";
-    let html = h;
-    Object.entries(f).forEach(([key, value]) => {
-      html = html.replaceAll(`{{${key}}}`, value || "");
-    });
-    return html;
-  }
 
   // Toggle asset selection
   function toggleAsset(asset) {
@@ -160,32 +148,19 @@ export default function Home() {
     });
   }
 
-  // Build asset prompt for AI
-  function buildAssetPrompt() {
-    if (selectedAssets.length === 0) return "";
-    const lines = selectedAssets.map(
-      (a) =>
-        `- ${a.category?.replace("_", " ") || "image"}: ${a.public_url} (name: "${a.name}") — use <img src="${a.public_url}" crossorigin="anonymous" /> in the HTML`
-    );
-    return `\n\nBRAND ASSETS TO INCLUDE IN THE AD (use these actual image URLs with <img> tags):\n${lines.join("\n")}`;
-  }
-
   // ============ Auto-Review (non-blocking) ============
-  async function triggerAutoReview(html, fieldsObj) {
+  async function triggerAutoReview(url) {
+    if (!url) return;
     setReviewing(true);
     setReview(null);
     setSelectedImprovements([]);
     try {
       const size = getAdSize(adSizeId);
-      let rendered = html;
-      Object.entries(fieldsObj).forEach(([key, value]) => {
-        rendered = rendered.replaceAll(`{{${key}}}`, value || "");
-      });
       const res = await fetch("/api/review-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          adHtml: rendered,
+          renderUrl: url,
           channel,
           adSize: `${size.width}x${size.height}`,
         }),
@@ -234,14 +209,13 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to recreate ad");
 
-      setGeneratedHtml(data.html);
-      setFields(data.fields || {});
-      if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
-      if (data.textColor) setTextColor(data.textColor);
-      if (data.accentColor) setAccentColor(data.accentColor);
+      setRenderUrl(data.renderUrl);
+      setTemplateId(data.templateId);
+      setTemplateName(data.templateName);
+      setModifications(data.modifications || {});
+      setEditableFields(data.editableFields || {});
 
-      // Auto-review in background
-      triggerAutoReview(data.html, data.fields || {});
+      triggerAutoReview(data.renderUrl);
     } catch (err) {
       console.error("Recreate failed:", err);
       setError(err.message || "Something went wrong.");
@@ -258,11 +232,20 @@ export default function Home() {
 
     try {
       const size = getAdSize(adSizeId);
+
+      let assetNote = "";
+      if (selectedAssets.length > 0) {
+        const lines = selectedAssets.map(
+          (a) => `${a.category?.replace("_", " ") || "image"}: ${a.public_url}`
+        );
+        assetNote = `\n\nUse these brand asset images: ${lines.join(", ")}`;
+      }
+
       const res = await fetch("/api/generate-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description: adDescription + buildAssetPrompt(),
+          description: adDescription + assetNote,
           adWidth: size.width,
           adHeight: size.height,
           flavor: flavor === "All / General" ? null : flavor,
@@ -273,14 +256,13 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate ad");
 
-      setGeneratedHtml(data.html);
-      setFields(data.fields || {});
-      if (data.backgroundColor) setBackgroundColor(data.backgroundColor);
-      if (data.textColor) setTextColor(data.textColor);
-      if (data.accentColor) setAccentColor(data.accentColor);
+      setRenderUrl(data.renderUrl);
+      setTemplateId(data.templateId);
+      setTemplateName(data.templateName);
+      setModifications(data.modifications || {});
+      setEditableFields(data.editableFields || {});
 
-      // Auto-review in background
-      triggerAutoReview(data.html, data.fields || {});
+      triggerAutoReview(data.renderUrl);
     } catch (err) {
       console.error("Create failed:", err);
       setError(err.message || "Something went wrong.");
@@ -291,37 +273,65 @@ export default function Home() {
 
   // ============ NL Editing ============
   async function handleEditWithAI() {
-    if (!editInstruction.trim() || !generatedHtml) return;
+    if (!editInstruction.trim() || !templateId) return;
     setEditing(true);
     setError(null);
 
     try {
-      const size = getAdSize(adSizeId);
       const res = await fetch("/api/edit-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          currentHtml: renderAd(),
+          templateId,
+          modifications,
+          editableFields,
           instruction: editInstruction,
-          adWidth: size.width,
-          adHeight: size.height,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Edit failed");
 
-      setGeneratedHtml(data.html);
-      setFields(data.fields || {});
+      setRenderUrl(data.renderUrl);
+      if (data.templateChanged) {
+        setTemplateId(data.templateId);
+        setEditableFields(data.editableFields);
+      }
+      setModifications(data.modifications || {});
       setEditInstruction("");
 
-      // Auto-review after edit
-      triggerAutoReview(data.html, data.fields || {});
+      triggerAutoReview(data.renderUrl);
     } catch (err) {
       console.error("Edit failed:", err);
       setError(err.message || "Edit failed.");
     } finally {
       setEditing(false);
+    }
+  }
+
+  // ============ Re-render after manual field edits ============
+  async function handleReRender() {
+    if (!templateId) return;
+    setRendering(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateId, modifications }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Re-render failed");
+
+      setRenderUrl(data.renderUrl);
+      triggerAutoReview(data.renderUrl);
+    } catch (err) {
+      console.error("Re-render failed:", err);
+      setError(err.message || "Re-render failed.");
+    } finally {
+      setRendering(false);
     }
   }
 
@@ -337,27 +347,29 @@ export default function Home() {
         .map((f, i) => `${i + 1}) ${f.fix}`)
         .join("\n");
 
-      const size = getAdSize(adSizeId);
       const res = await fetch("/api/edit-ad", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          currentHtml: renderAd(),
+          templateId,
+          modifications,
+          editableFields,
           instruction: `Apply these specific improvements to the ad:\n${instruction}`,
-          adWidth: size.width,
-          adHeight: size.height,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Apply fixes failed");
 
-      setGeneratedHtml(data.html);
-      setFields(data.fields || {});
+      setRenderUrl(data.renderUrl);
+      if (data.templateChanged) {
+        setTemplateId(data.templateId);
+        setEditableFields(data.editableFields);
+      }
+      setModifications(data.modifications || {});
       setSelectedImprovements([]);
 
-      // Re-review after fixes
-      triggerAutoReview(data.html, data.fields || {});
+      triggerAutoReview(data.renderUrl);
     } catch (err) {
       console.error("Apply fixes failed:", err);
       setError(err.message || "Failed to apply fixes.");
@@ -373,7 +385,9 @@ export default function Home() {
     if (flow === "reference") await handleRecreate();
     else if (flow === "scratch") await handleCreateFromScratch();
     else {
-      setEditInstruction("Regenerate this ad with a fresh creative take, keeping the same general concept and brand style.");
+      setEditInstruction(
+        "Regenerate this ad with a fresh creative take, keeping the same general concept and brand style."
+      );
       await handleEditWithAI();
     }
   }
@@ -381,8 +395,11 @@ export default function Home() {
   // ============ Reset ============
   function resetFlow() {
     setFlow(null);
-    setGeneratedHtml(null);
-    setFields({});
+    setRenderUrl(null);
+    setTemplateId(null);
+    setTemplateName(null);
+    setModifications({});
+    setEditableFields({});
     setReferenceImage(null);
     setReferencePreview(null);
     setReferenceNotes("");
@@ -392,63 +409,32 @@ export default function Home() {
     setEditInstruction("");
     setSelectedAssets([]);
     setSelectedImprovements([]);
-    setBackgroundColor("#fffbec");
-    setTextColor("#4b1c10");
-    setAccentColor("#f0615a");
   }
 
   function goBackToInput() {
-    setGeneratedHtml(null);
-    setFields({});
+    setRenderUrl(null);
+    setTemplateId(null);
+    setTemplateName(null);
+    setModifications({});
+    setEditableFields({});
     setError(null);
     setReview(null);
     setSelectedImprovements([]);
   }
 
-  // ============ Export PNG (high quality) ============
+  // ============ Export PNG ============
   async function handleExport() {
+    if (!renderUrl) return;
     setExporting(true);
     try {
+      const response = await fetch(renderUrl);
+      const blob = await response.blob();
       const size = getAdSize(adSizeId);
-
-      // Create an off-screen container at the exact ad dimensions
-      // This avoids text reflow issues from messing with the visible preview's transform
-      const offscreen = document.createElement("div");
-      offscreen.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${size.width}px;height:${size.height}px;overflow:hidden;z-index:-1;`;
-
-      const adEl = document.createElement("div");
-      adEl.style.cssText = `width:${size.width}px;height:${size.height}px;position:relative;overflow:hidden;`;
-      adEl.innerHTML = adHtml;
-
-      offscreen.appendChild(adEl);
-      document.body.appendChild(offscreen);
-
-      // Wait for layout + fonts to settle
-      await document.fonts.ready;
-      await new Promise((r) => setTimeout(r, 150));
-
-      const canvas = await toCanvas(adEl, {
-        width: size.width,
-        height: size.height,
-        pixelRatio: 3,
-      });
-
-      // Clean up
-      document.body.removeChild(offscreen);
-
       const flavorSlug =
         flavor === "All / General"
           ? "general"
           : flavor.toLowerCase().replace(/\s+/g, "-");
-
-      canvas.toBlob(
-        (blob) => {
-          if (blob) {
-            saveAs(blob, `chichi-${flavorSlug}-${size.width}x${size.height}.png`);
-          }
-        },
-        "image/png"
-      );
+      saveAs(blob, `chichi-${flavorSlug}-${size.width}x${size.height}.png`);
     } catch (err) {
       console.error("Export failed:", err);
     } finally {
@@ -467,18 +453,22 @@ export default function Home() {
 
       const size = getAdSize(adSizeId);
       const headlineField =
-        fields.headline || Object.values(fields)[0] || "Untitled Ad";
+        modifications["Headline"] ||
+        modifications[Object.keys(modifications)[0]] ||
+        "Untitled Ad";
 
       const { error: dbError } = await supabase.from("generated_ads").insert({
         name: headlineField,
         ad_size: `${size.width}x${size.height}`,
-        template_id: "ai-generated",
-        headline: fields.headline || headlineField,
-        subheadline: fields.subheadline || "",
-        body_copy: fields.body || fields.description || "",
-        cta_text: fields.cta || "",
-        reference_analysis: { generatedHtml, fields },
-        template_vars: { backgroundColor, textColor, accentColor },
+        template_id: templateId,
+        headline: modifications["Headline"] || headlineField,
+        subheadline: modifications["Subheadline"] || "",
+        body_copy: modifications["Body"] || "",
+        cta_text: modifications["CTA"] || "",
+        creatomate_template_id: templateId,
+        creatomate_render_url: renderUrl,
+        creatomate_modifications: modifications,
+        render_engine: "creatomate",
         flavor: flavor === "All / General" ? null : flavor,
         channel,
       });
@@ -492,23 +482,21 @@ export default function Home() {
     }
   }
 
+  // ============ Update a single modification ============
+  function updateModification(key, value) {
+    setModifications((prev) => ({ ...prev, [key]: value }));
+  }
+
   // ============ Preview ============
   const size = getAdSize(adSizeId);
   const maxPreviewWidth = 500;
   const scale = Math.min(maxPreviewWidth / size.width, 1);
-  const adHtml = renderAd();
-  const hasGenerated = !!generatedHtml;
+  const hasGenerated = !!renderUrl;
 
-  // Helper: score color
   function scoreColor(score) {
     if (score >= 7) return "text-green-600";
     if (score >= 4) return "text-yellow-600";
     return "text-red-500";
-  }
-  function scoreBg(score) {
-    if (score >= 7) return "bg-green-50 border-green-200";
-    if (score >= 4) return "bg-yellow-50 border-yellow-200";
-    return "bg-red-50 border-red-200";
   }
 
   // ============ Brand Asset Picker Component ============
@@ -517,8 +505,12 @@ export default function Home() {
     const grouped = {
       packaging: brandAssets.filter((a) => a.category === "packaging"),
       product_photo: brandAssets.filter((a) => a.category === "product_photo"),
-      logo: brandAssets.filter((a) => a.category === "logo" || a.category === "mascot"),
-      lifestyle: brandAssets.filter((a) => a.category === "lifestyle" || a.category === "background"),
+      logo: brandAssets.filter(
+        (a) => a.category === "logo" || a.category === "mascot"
+      ),
+      lifestyle: brandAssets.filter(
+        (a) => a.category === "lifestyle" || a.category === "background"
+      ),
     };
     const nonEmpty = Object.entries(grouped).filter(([, v]) => v.length > 0);
     if (nonEmpty.length === 0) return null;
@@ -531,7 +523,11 @@ export default function Home() {
         </label>
         {nonEmpty.map(([cat, assets]) => (
           <div key={cat} className="mb-1.5">
-            {!compact && <p className="text-xs text-chocolate/40 mb-1 capitalize">{cat.replace("_", " ")}</p>}
+            {!compact && (
+              <p className="text-xs text-chocolate/40 mb-1 capitalize">
+                {cat.replace("_", " ")}
+              </p>
+            )}
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {assets.map((a) => {
                 const isSelected = selectedAssets.find((s) => s.id === a.id);
@@ -550,7 +546,9 @@ export default function Home() {
                       src={a.public_url}
                       alt={a.name}
                       className="w-full h-full object-cover"
-                      onError={(e) => { e.target.style.display = "none"; }}
+                      onError={(e) => {
+                        e.target.style.display = "none";
+                      }}
                     />
                   </button>
                 );
@@ -631,7 +629,7 @@ export default function Home() {
         </button>
         <h1 className="font-heading text-3xl text-chocolate mb-2">Copy a Reference Ad</h1>
         <p className="text-chocolate/60 mb-8">
-          Upload an ad you like. We&apos;ll recreate the exact layout for ChiChi.
+          Upload an ad you like. We&apos;ll match it to a professional template and recreate it for ChiChi.
         </p>
 
         <div
@@ -721,12 +719,12 @@ export default function Home() {
           &larr; Back
         </button>
         <h1 className="font-heading text-3xl text-chocolate mb-2">Create from Scratch</h1>
-        <p className="text-chocolate/60 mb-8">Describe what you want and AI will design the full ad.</p>
+        <p className="text-chocolate/60 mb-8">Describe what you want and AI will pick the best template and write the copy.</p>
 
         <div className="mb-6">
           <label className="block text-sm font-medium text-chocolate mb-2">Describe your ad</label>
           <textarea value={adDescription} onChange={(e) => setAdDescription(e.target.value)}
-            placeholder="e.g., A bold 2x3 grid showing 6 nutritional benefits. Use teal and vanilla colors. Make it pop."
+            placeholder="e.g., A bold promo ad for 20% off first order. Use teal and vanilla colors. Make it pop."
             className="w-full border border-chocolate/20 rounded-xl px-4 py-3 bg-vanilla text-chocolate text-sm h-32 resize-none placeholder:text-chocolate/30" />
         </div>
 
@@ -757,7 +755,7 @@ export default function Home() {
         <div className="mb-6">
           <p className="text-xs text-chocolate/40 mb-2">Quick ideas:</p>
           <div className="flex flex-wrap gap-2">
-            {["6-box grid showing nutritional benefits", "Bold promo — 20% off first order", "Lifestyle — cozy morning routine", "Protein-focused — gym & fitness angle", "Split layout — us vs regular oatmeal"].map((idea) => (
+            {["Bold promo — 20% off first order", "Hero product shot with strong CTA", "Lifestyle — cozy morning routine", "Protein-focused — gym & fitness angle", "Minimal, bold headline with brand colors"].map((idea) => (
               <button key={idea} onClick={() => setAdDescription(idea)} className="text-xs px-3 py-1.5 bg-chocolate/5 text-chocolate/60 rounded-full hover:bg-chocolate/10 transition-colors">{idea}</button>
             ))}
           </div>
@@ -794,19 +792,36 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr,380px] gap-8">
         {/* Left: Ad Preview */}
         <div>
-          <h2 className="font-heading text-2xl text-chocolate mb-4">Your Ad</h2>
-          <div ref={adPreviewRef} className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="font-heading text-2xl text-chocolate">Your Ad</h2>
+            {templateName && (
+              <span className="text-xs px-2 py-0.5 bg-chocolate/5 text-chocolate/50 rounded-full">
+                {templateName}
+              </span>
+            )}
+          </div>
+
+          <div className="bg-white rounded-xl border border-chocolate/10 overflow-hidden inline-block"
             style={{ width: size.width * scale, height: size.height * scale }}>
-            <div className="ad-render-target"
-              style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: size.width, height: size.height }}
-              dangerouslySetInnerHTML={{ __html: adHtml }} />
+            {renderUrl ? (
+              <img
+                src={renderUrl}
+                alt="Generated ad"
+                style={{ width: size.width * scale, height: size.height * scale }}
+                className="block object-contain"
+              />
+            ) : (
+              <div className="flex items-center justify-center text-chocolate/30"
+                style={{ width: size.width * scale, height: size.height * scale }}>
+                No preview
+              </div>
+            )}
           </div>
           <p className="text-xs text-chocolate/30 mt-2">{size.width} x {size.height}px — Preview at {Math.round(scale * 100)}%</p>
 
           {/* Auto-Review Panel */}
           {(reviewing || review) && (
             <div className="mt-4 bg-white rounded-xl border border-chocolate/10 overflow-hidden">
-              {/* Always-visible score bar */}
               <button
                 onClick={() => review && setReviewOpen(!reviewOpen)}
                 className="w-full px-4 py-3 flex items-center gap-3 hover:bg-chocolate/[0.02] transition-colors text-left"
@@ -841,10 +856,8 @@ export default function Home() {
                 )}
               </button>
 
-              {/* Collapsible details */}
               {review && reviewOpen && (
                 <div className="px-4 pb-4 border-t border-chocolate/5">
-                  {/* Strengths */}
                   {review.strengths?.length > 0 && (
                     <div className="mt-3 mb-3">
                       <p className="text-xs font-medium text-green-700 mb-1">Strengths</p>
@@ -854,34 +867,18 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Clickable Improvements */}
                   {review.improvements?.length > 0 && (
                     <div className="mb-3">
-                      <p className="text-xs font-medium text-chocolate/60 mb-2">
-                        Click improvements to select, then apply:
-                      </p>
+                      <p className="text-xs font-medium text-chocolate/60 mb-2">Click improvements to select, then apply:</p>
                       {review.improvements.map((imp, i) => {
                         const isSelected = selectedImprovements.includes(i);
                         return (
-                          <button
-                            key={i}
-                            onClick={() => {
-                              setSelectedImprovements((prev) =>
-                                isSelected
-                                  ? prev.filter((idx) => idx !== i)
-                                  : [...prev, i]
-                              );
-                            }}
-                            className={`w-full text-left mb-2 p-2.5 rounded-lg border-2 transition-all ${
-                              isSelected
-                                ? "border-peach bg-peach/5"
-                                : "border-transparent bg-chocolate/[0.03] hover:border-chocolate/10"
-                            }`}
+                          <button key={i}
+                            onClick={() => setSelectedImprovements((prev) => isSelected ? prev.filter((idx) => idx !== i) : [...prev, i])}
+                            className={`w-full text-left mb-2 p-2.5 rounded-lg border-2 transition-all ${isSelected ? "border-peach bg-peach/5" : "border-transparent bg-chocolate/[0.03] hover:border-chocolate/10"}`}
                           >
                             <div className="flex items-start gap-2">
-                              <div className={`mt-0.5 w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors ${
-                                isSelected ? "bg-peach border-peach" : "border-chocolate/20"
-                              }`}>
+                              <div className={`mt-0.5 w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center transition-colors ${isSelected ? "bg-peach border-peach" : "border-chocolate/20"}`}>
                                 {isSelected && (
                                   <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -892,23 +889,15 @@ export default function Home() {
                                 <p className="text-xs font-medium text-chocolate">{imp.issue}</p>
                                 <p className="text-xs text-chocolate/50 mt-0.5">{imp.fix}</p>
                               </div>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
-                                imp.priority === "high" ? "bg-red-100 text-red-700"
-                                : imp.priority === "medium" ? "bg-yellow-100 text-yellow-700"
-                                : "bg-gray-100 text-gray-600"
-                              }`}>{imp.priority}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${imp.priority === "high" ? "bg-red-100 text-red-700" : imp.priority === "medium" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"}`}>{imp.priority}</span>
                             </div>
                           </button>
                         );
                       })}
 
-                      {/* Apply Fixes Button */}
                       {selectedImprovements.length > 0 && (
-                        <button
-                          onClick={handleApplyFixes}
-                          disabled={applyingFixes}
-                          className="w-full mt-1 py-2.5 bg-peach text-white rounded-lg font-medium text-sm hover:bg-peach/90 transition-colors disabled:opacity-50"
-                        >
+                        <button onClick={handleApplyFixes} disabled={applyingFixes}
+                          className="w-full mt-1 py-2.5 bg-peach text-white rounded-lg font-medium text-sm hover:bg-peach/90 transition-colors disabled:opacity-50">
                           {applyingFixes ? (
                             <span className="flex items-center justify-center gap-2">
                               <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
@@ -922,7 +911,6 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Tips */}
                   {review.tips?.length > 0 && (
                     <div>
                       <p className="text-xs font-medium text-sky mb-1">Platform Tips</p>
@@ -937,11 +925,11 @@ export default function Home() {
 
         {/* Right: Controls */}
         <div className="space-y-4">
-          <button onClick={handleExport} disabled={exporting}
+          <button onClick={handleExport} disabled={exporting || !renderUrl}
             className="w-full py-3 bg-peach text-white rounded-xl font-medium hover:bg-peach/90 transition-colors disabled:opacity-50">
-            {exporting ? "Exporting..." : "Download PNG"}
+            {exporting ? "Downloading..." : "Download PNG"}
           </button>
-          <button onClick={handleSave} disabled={saving}
+          <button onClick={handleSave} disabled={saving || !renderUrl}
             className="w-full py-2.5 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50">
             {saving ? "Saving..." : "Save to Gallery"}
           </button>
@@ -953,7 +941,7 @@ export default function Home() {
               <input type="text" value={editInstruction}
                 onChange={(e) => setEditInstruction(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !editing && handleEditWithAI()}
-                placeholder="e.g., Make headline bigger, add a product photo, change CTA..."
+                placeholder="e.g., Make CTA more urgent, try a playful headline..."
                 className="flex-1 border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate placeholder:text-chocolate/25" />
               <button onClick={handleEditWithAI} disabled={!editInstruction.trim() || editing}
                 className="px-4 py-2 bg-sky text-white rounded-lg text-sm font-medium hover:bg-sky/90 transition-colors disabled:opacity-50 shrink-0">
@@ -966,21 +954,21 @@ export default function Home() {
               </button>
             </div>
             <div className="flex flex-wrap gap-1 mt-2">
-              {["Make headline bigger", "Add more whitespace", "Make CTA more urgent", "Simplify the layout"].map((q) => (
+              {["Make CTA more urgent", "Try a bolder headline", "Make copy more playful", "Switch to a lifestyle template"].map((q) => (
                 <button key={q} onClick={() => setEditInstruction(q)}
                   className="text-xs px-2 py-0.5 bg-sky/5 text-sky/70 rounded hover:bg-sky/10 transition-colors">{q}</button>
               ))}
             </div>
           </div>
 
-          {/* Brand Assets — add/change images */}
+          {/* Brand Assets */}
           <div className="pt-3 border-t border-chocolate/10">
             <AssetPicker compact />
             {selectedAssets.length > 0 && (
               <button
                 onClick={() => {
                   const assetInstruction = selectedAssets.map(a =>
-                    `Add this ${a.category?.replace("_", " ") || "image"} to the ad: <img src="${a.public_url}" crossorigin="anonymous" style="max-width:100%;max-height:200px;object-fit:contain;" />`
+                    `Use this ${a.category?.replace("_", " ") || "image"} in the ad: ${a.public_url}`
                   ).join(". ");
                   setEditInstruction(assetInstruction);
                 }}
@@ -991,47 +979,75 @@ export default function Home() {
             )}
           </div>
 
+          {/* Edit Fields */}
+          {Object.keys(editableFields).length > 0 && (
+            <div className="pt-3 border-t border-chocolate/10">
+              <p className="text-xs font-medium text-chocolate/40 mb-2">Edit Fields</p>
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {Object.entries(editableFields).map(([key, fieldDef]) => {
+                  const value = modifications[key] || "";
+
+                  if (fieldDef.type === "color") {
+                    return (
+                      <div key={key}>
+                        <label className="block text-xs text-chocolate/40 mb-0.5">{formatFieldName(key)}</label>
+                        <div className="flex gap-2 items-center">
+                          <input type="color" value={value || "#ffffff"}
+                            onChange={(e) => updateModification(fieldDef.property ? `${key}.${fieldDef.property}` : key, e.target.value)}
+                            className="w-8 h-8 rounded border border-chocolate/20 cursor-pointer" />
+                          <span className="text-xs text-chocolate/40">{value}</span>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (fieldDef.type === "image") {
+                    return (
+                      <div key={key}>
+                        <label className="block text-xs text-chocolate/40 mb-0.5">{formatFieldName(key)}</label>
+                        <input type="text" value={value} placeholder="Image URL..."
+                          onChange={(e) => updateModification(key, e.target.value)}
+                          className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate placeholder:text-chocolate/25" />
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={key}>
+                      <label className="block text-xs text-chocolate/40 mb-0.5">{formatFieldName(key)}</label>
+                      {(value || "").length > 50 ? (
+                        <textarea value={value}
+                          onChange={(e) => updateModification(key, e.target.value)}
+                          className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate h-16 resize-none" />
+                      ) : (
+                        <input type="text" value={value}
+                          onChange={(e) => updateModification(key, e.target.value)}
+                          className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button onClick={handleReRender} disabled={rendering}
+                className="w-full mt-3 py-2.5 bg-sky text-white rounded-xl font-medium text-sm hover:bg-sky/90 transition-colors disabled:opacity-50">
+                {rendering ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-75" />
+                    </svg>Re-rendering...
+                  </span>
+                ) : "Re-render with Changes"}
+              </button>
+            </div>
+          )}
+
           {/* Regenerate */}
           <button onClick={handleRegenerate} disabled={generating}
             className="w-full py-2.5 bg-chocolate/5 text-chocolate rounded-xl font-medium hover:bg-chocolate/10 transition-colors disabled:opacity-50">
             {generating ? "Regenerating..." : "Regenerate"}
           </button>
-
-          {/* Edit Copy — dynamic fields */}
-          <div className="pt-3 border-t border-chocolate/10">
-            <p className="text-xs font-medium text-chocolate/40 mb-2">Edit Copy</p>
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {Object.entries(fields).map(([key, value]) => (
-                <div key={key}>
-                  <label className="block text-xs text-chocolate/40 mb-0.5">{formatFieldName(key)}</label>
-                  {(value || "").length > 50 ? (
-                    <textarea value={value}
-                      onChange={(e) => setFields({ ...fields, [key]: e.target.value })}
-                      className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate h-16 resize-none" />
-                  ) : (
-                    <input type="text" value={value}
-                      onChange={(e) => setFields({ ...fields, [key]: e.target.value })}
-                      className="w-full border border-chocolate/20 rounded-lg px-3 py-2 text-sm bg-vanilla text-chocolate" />
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Colors */}
-          <div className="pt-3 border-t border-chocolate/10">
-            <p className="text-xs font-medium text-chocolate/40 mb-2">
-              Colors <span className="font-normal">(click a color, then Apply)</span>
-            </p>
-            <div className="flex gap-1 flex-wrap">
-              {Object.entries({ ...brandContext.colors.primary, ...brandContext.colors.pairings }).map(([name, hex]) => (
-                <button key={hex}
-                  onClick={() => setEditInstruction(`Change the main background color to ${name} (${hex})`)}
-                  className="w-6 h-6 rounded border border-chocolate/10 hover:ring-2 hover:ring-peach/30 transition-all"
-                  style={{ backgroundColor: hex }} title={`${name}: ${hex}`} />
-              ))}
-            </div>
-          </div>
 
           {/* Ad Size */}
           <div className="pt-3 border-t border-chocolate/10">

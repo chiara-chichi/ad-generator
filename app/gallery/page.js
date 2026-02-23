@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { toCanvas } from "html-to-image";
 import { saveAs } from "file-saver";
 
 /* ------------------------------------------------------------------ */
-/*  Helper: replace {{token}} placeholders in AI-generated HTML       */
+/*  Helper: replace {{token}} placeholders in legacy AI-generated HTML */
 /* ------------------------------------------------------------------ */
 function renderAdHtml(ad) {
   const html = ad.reference_analysis?.generatedHtml;
@@ -20,7 +20,7 @@ function renderAdHtml(ad) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Helper: parse "1080x1080" → { width, height }                     */
+/*  Helper: parse "1080x1080" -> { width, height }                     */
 /* ------------------------------------------------------------------ */
 function parseAdSize(adSize) {
   if (!adSize) return { width: 1080, height: 1080 };
@@ -32,14 +32,29 @@ function parseAdSize(adSize) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Inline-rendered ad preview component (scaled to fit card)          */
+/*  Ad preview: handles both Creatomate images and legacy HTML         */
 /* ------------------------------------------------------------------ */
 function AdPreview({ ad, maxWidth = 300 }) {
-  const html = renderAdHtml(ad);
   const { width, height } = parseAdSize(ad.ad_size);
   const scale = maxWidth / width;
   const scaledHeight = height * scale;
 
+  // Creatomate render: show the image
+  if (ad.render_engine === "creatomate" && ad.creatomate_render_url) {
+    return (
+      <div style={{ width: maxWidth, height: scaledHeight, overflow: "hidden" }}>
+        <img
+          src={ad.creatomate_render_url}
+          alt={ad.name || "Generated ad"}
+          style={{ width: maxWidth, height: scaledHeight }}
+          className="object-contain"
+        />
+      </div>
+    );
+  }
+
+  // Legacy HTML render
+  const html = renderAdHtml(ad);
   if (!html) {
     return (
       <div className="w-full h-full flex items-center justify-center text-chocolate/30 text-sm">
@@ -125,11 +140,26 @@ export default function GalleryPage() {
     }
   }
 
-  /* ---- Download: render at full size, capture as PNG ---- */
+  /* ---- Download ---- */
   async function handleDownload(ad) {
+    // Creatomate ads: direct download from CDN
+    if (ad.render_engine === "creatomate" && ad.creatomate_render_url) {
+      setDownloadingId(ad.id);
+      try {
+        const response = await fetch(ad.creatomate_render_url);
+        const blob = await response.blob();
+        saveAs(blob, `chichi-ad-${ad.flavor || "untitled"}-${ad.ad_size}.png`);
+      } catch (err) {
+        console.error("Download failed:", err);
+      } finally {
+        setDownloadingId(null);
+      }
+      return;
+    }
+
+    // Legacy HTML ads: render to canvas
     const html = renderAdHtml(ad);
 
-    // If there's an existing output image and no HTML to render, use the URL
     if (!html && ad.output_image_url) {
       const link = document.createElement("a");
       link.href = ad.output_image_url;
@@ -144,7 +174,6 @@ export default function GalleryPage() {
 
     const { width, height } = parseAdSize(ad.ad_size);
 
-    // Create a temporary hidden container at full ad dimensions
     const container = document.createElement("div");
     container.style.position = "fixed";
     container.style.left = "-99999px";
@@ -156,7 +185,6 @@ export default function GalleryPage() {
     document.body.appendChild(container);
 
     try {
-      // Wait for fonts + layout to settle
       await document.fonts.ready;
       await new Promise((r) => setTimeout(r, 200));
 
@@ -169,7 +197,10 @@ export default function GalleryPage() {
       canvas.toBlob(
         (blob) => {
           if (blob) {
-            saveAs(blob, `chichi-ad-${ad.flavor || "untitled"}-${ad.ad_size}.png`);
+            saveAs(
+              blob,
+              `chichi-ad-${ad.flavor || "untitled"}-${ad.ad_size}.png`
+            );
           }
         },
         "image/png"
@@ -184,23 +215,41 @@ export default function GalleryPage() {
 
   /* ---- Re-edit: store ad data in localStorage, navigate ---- */
   function handleReEdit(ad) {
-    localStorage.setItem(
-      "editAd",
-      JSON.stringify({
-        generatedHtml: ad.reference_analysis?.generatedHtml,
-        fields: ad.reference_analysis?.fields || {},
-        adSize: ad.ad_size,
-        flavor: ad.flavor,
-        channel: ad.channel,
-        backgroundColor: ad.template_vars?.backgroundColor,
-        textColor: ad.template_vars?.textColor,
-        accentColor: ad.template_vars?.accentColor,
-      })
-    );
+    if (ad.render_engine === "creatomate") {
+      localStorage.setItem(
+        "editAd",
+        JSON.stringify({
+          renderEngine: "creatomate",
+          renderUrl: ad.creatomate_render_url,
+          templateId: ad.creatomate_template_id,
+          modifications: ad.creatomate_modifications || {},
+          editableFields: {}, // will be fetched from template registry on load
+          adSize: ad.ad_size,
+          flavor: ad.flavor,
+          channel: ad.channel,
+        })
+      );
+    } else {
+      // Legacy HTML ads
+      localStorage.setItem(
+        "editAd",
+        JSON.stringify({
+          renderEngine: "html",
+          generatedHtml: ad.reference_analysis?.generatedHtml,
+          fields: ad.reference_analysis?.fields || {},
+          adSize: ad.ad_size,
+          flavor: ad.flavor,
+          channel: ad.channel,
+          backgroundColor: ad.template_vars?.backgroundColor,
+          textColor: ad.template_vars?.textColor,
+          accentColor: ad.template_vars?.accentColor,
+        })
+      );
+    }
     window.location.href = "/?edit=true";
   }
 
-  /* ---- Duplicate: copy in Supabase, then open for re-edit ---- */
+  /* ---- Duplicate ---- */
   async function handleDuplicate(ad) {
     if (!supabase) return;
     const { id, created_at, ...rest } = ad;
@@ -220,6 +269,15 @@ export default function GalleryPage() {
     filterChannel === "all"
       ? ads
       : ads.filter((a) => a.channel === filterChannel);
+
+  /* ---- Helper: can this ad be downloaded? ---- */
+  function canDownload(ad) {
+    if (ad.render_engine === "creatomate" && ad.creatomate_render_url)
+      return true;
+    if (ad.output_image_url) return true;
+    if (renderAdHtml(ad)) return true;
+    return false;
+  }
 
   /* ---- No Supabase configured ---- */
   if (!supabase) {
@@ -279,17 +337,9 @@ export default function GalleryPage() {
               key={ad.id}
               className="bg-white rounded-xl overflow-hidden shadow-sm border border-chocolate/5 hover:shadow-md transition-shadow"
             >
-              {/* Thumbnail: rendered HTML or fallback image */}
+              {/* Thumbnail */}
               <div className="bg-chocolate/5 flex items-center justify-center overflow-hidden">
-                {ad.output_image_url && !renderAdHtml(ad) ? (
-                  <img
-                    src={ad.output_image_url}
-                    alt={ad.name || "Generated ad"}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <AdPreview ad={ad} maxWidth={300} />
-                )}
+                <AdPreview ad={ad} maxWidth={300} />
               </div>
 
               {/* Card info */}
@@ -311,6 +361,12 @@ export default function GalleryPage() {
                       <span className="capitalize">{ad.channel}</span>
                     </>
                   )}
+                  {ad.render_engine === "creatomate" && (
+                    <>
+                      <span>-</span>
+                      <span className="text-sky">Template</span>
+                    </>
+                  )}
                 </div>
                 <p className="text-xs text-chocolate/30 mt-1">
                   {new Date(ad.created_at).toLocaleDateString()}
@@ -320,10 +376,7 @@ export default function GalleryPage() {
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={() => handleDownload(ad)}
-                    disabled={
-                      downloadingId === ad.id ||
-                      (!ad.output_image_url && !renderAdHtml(ad))
-                    }
+                    disabled={downloadingId === ad.id || !canDownload(ad)}
                     className="flex-1 text-xs py-1.5 px-3 bg-peach text-white rounded-lg hover:bg-peach/90 transition-colors disabled:opacity-30"
                   >
                     {downloadingId === ad.id ? "Exporting..." : "Download"}

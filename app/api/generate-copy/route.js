@@ -2,7 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { buildBrandPrompt, brandContext } from "@/lib/brand-context";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let _client;
+function getClient() {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
+  return _client;
+}
 
 export async function POST(request) {
   try {
@@ -30,7 +34,7 @@ Write ad copy that is punchy, on-brand, and makes people stop scrolling. Lead wi
       ? `Generate 3 ad copy variations for a ${channel || "social media"} ad. Additional direction: ${userPrompt}`
       : `Generate 3 ad copy variations for a ${channel || "social media"} ad${product ? ` featuring ${product.name}` : ""}.`;
 
-    const response = await client.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 1500,
       system: systemPrompt,

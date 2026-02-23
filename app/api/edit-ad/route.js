@@ -1,90 +1,161 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { brandContext } from "@/lib/brand-context";
+import { renderTemplate } from "@/lib/creatomate";
+import { supabaseAdmin } from "@/lib/supabase";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let _client;
+function getClient() {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
+  return _client;
+}
+
+function parseJSON(text) {
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (m) return JSON.parse(m[1].trim());
+  const o = text.match(/\{[\s\S]*\}/);
+  if (o) return JSON.parse(o[0]);
+  throw new Error("Could not parse AI response");
+}
+
+function getBrandColors() {
+  const list = [];
+  if (brandContext.colors?.primary)
+    Object.entries(brandContext.colors.primary).forEach(([n, h]) =>
+      list.push(`${n}: ${h}`)
+    );
+  if (brandContext.colors?.pairings)
+    Object.entries(brandContext.colors.pairings).forEach(([n, h]) =>
+      list.push(`${n}: ${h}`)
+    );
+  return list.join(", ");
+}
 
 export async function POST(request) {
   try {
-    const { currentHtml, instruction, adWidth, adHeight } =
+    const { templateId, modifications, editableFields, instruction } =
       await request.json();
 
-    if (!currentHtml || !instruction) {
+    if (!templateId || !instruction) {
       return NextResponse.json(
-        { error: "Missing currentHtml or instruction" },
+        { error: "Missing templateId or instruction" },
         { status: 400 }
       );
     }
 
-    const brandColorsList = [];
-    if (brandContext.colors?.primary) {
-      Object.entries(brandContext.colors.primary).forEach(([name, hex]) => {
-        brandColorsList.push(`${name}: ${hex}`);
-      });
+    // Build current modifications into a readable list
+    const currentValues = Object.entries(modifications || {})
+      .map(([key, val]) => `- ${key}: "${val}"`)
+      .join("\n");
+
+    const fieldDefs = Object.entries(editableFields || {})
+      .map(([key, def]) => `- ${key} (${def.type})`)
+      .join("\n");
+
+    // Fetch all templates in case Claude needs to switch
+    let templateCatalog = "";
+    if (supabaseAdmin) {
+      const { data } = await supabaseAdmin
+        .from("creatomate_templates")
+        .select("*")
+        .eq("is_active", true);
+
+      if (data && data.length > 0) {
+        templateCatalog = data
+          .map((t) => {
+            const fields = Object.entries(t.editable_fields || {})
+              .map(([name, def]) => `${name} (${def.type})`)
+              .join(", ");
+            return `"${t.name}" (ID: ${t.creatomate_id}) — ${t.description || t.category} | Fields: ${fields}`;
+          })
+          .join("\n");
+      }
     }
-    if (brandContext.colors?.pairings) {
-      Object.entries(brandContext.colors.pairings).forEach(([name, hex]) => {
-        brandColorsList.push(`${name}: ${hex}`);
-      });
-    }
 
-    const prompt = `You are editing an HTML ad for ChiChi Foods.
+    const prompt = `You are editing an ad for ChiChi Foods. The ad uses a Creatomate template with editable fields.
 
-BRAND COLORS: ${brandColorsList.join(", ")}
-BRAND FONTS: "Decoy, serif" for headlines, "Questa Sans, sans-serif" for body.
+BRAND COLORS: ${getBrandColors()}
 
-Here is the CURRENT ad HTML (${adWidth}x${adHeight}px):
-${currentHtml}
+CURRENT TEMPLATE ID: ${templateId}
+CURRENT FIELD VALUES:
+${currentValues}
+
+AVAILABLE FIELDS ON THIS TEMPLATE:
+${fieldDefs}
+
+${templateCatalog ? `OTHER AVAILABLE TEMPLATES (use only if the user wants a completely different layout):\n${templateCatalog}` : ""}
 
 THE USER WANTS THIS CHANGE:
 "${instruction}"
 
-Apply EXACTLY what the user asked for. Keep everything else the same unless the change logically requires adjusting other elements for visual consistency.
+INSTRUCTIONS:
+1. If this is a copy/text change: update the relevant text field(s) in modifications.
+2. If this is a color change: update the relevant color field(s). Use ChiChi brand colors.
+3. If this requires a completely different layout: pick a new template from the catalog and fill in ALL its fields.
+4. Keep all other field values unchanged unless the edit logically requires adjusting them.
+5. ChiChi makes CHICKPEA protein hot cereal, NOT oatmeal.
 
-RULES:
-1. Only change what the user asked for.
-2. Keep all inline styles. No <style> tags or classes.
-3. The ad must remain EXACTLY ${adWidth}px wide and ${adHeight}px tall.
-4. Use {{token_name}} placeholders for ALL text content.
-5. When adding/changing colors, prefer ChiChi brand colors.
-6. Preserve all existing layout structure unless the user explicitly asked to change it.
-7. Any <img> tags must include crossorigin="anonymous".
-
-Return ONLY valid JSON (no markdown fences, no explanation):
+Return ONLY valid JSON (no markdown fences):
 {
-  "html": "<the modified HTML with {{token}} placeholders>",
-  "fields": { "token_name": "text value for each token" }
-}`;
+  "templateId": "${templateId}",
+  "modifications": { "FieldName": "value for each field" },
+  "templateChanged": false
+}
 
-    const response = await client.messages.create({
+If you switch to a different template, set templateChanged to true and use the new templateId.`;
+
+    const response = await getClient().messages.create({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
+      max_tokens: 2048,
       messages: [{ role: "user", content: prompt }],
     });
 
-    const text = response.content[0].text;
-    let result;
-    try {
-      result = JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        result = JSON.parse(jsonMatch[1].trim());
-      } else {
-        const objMatch = text.match(/\{[\s\S]*\}/);
-        if (objMatch) {
-          result = JSON.parse(objMatch[0]);
-        } else {
-          throw new Error("Could not parse AI response");
-        }
+    const result = parseJSON(response.content[0].text);
+
+    if (!result.templateId || !result.modifications) {
+      throw new Error("AI response missing templateId or modifications");
+    }
+
+    // If template changed, fetch the new template's editable fields
+    let newEditableFields = editableFields;
+    if (
+      result.templateChanged &&
+      result.templateId !== templateId &&
+      supabaseAdmin
+    ) {
+      const { data } = await supabaseAdmin
+        .from("creatomate_templates")
+        .select("editable_fields, name")
+        .eq("creatomate_id", result.templateId)
+        .single();
+
+      if (data) {
+        newEditableFields = data.editable_fields;
       }
     }
 
-    if (!result.html || !result.fields) {
-      throw new Error("AI response missing html or fields");
+    // Render via Creatomate
+    const renders = await renderTemplate(
+      result.templateId,
+      result.modifications
+    );
+
+    if (!renders || renders.length === 0) {
+      throw new Error("Creatomate returned no renders");
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      renderUrl: renders[0].url,
+      templateId: result.templateId,
+      modifications: result.modifications,
+      editableFields: newEditableFields,
+      templateChanged: result.templateChanged || false,
+      width: renders[0].width,
+      height: renders[0].height,
+    });
   } catch (error) {
     console.error("Edit ad error:", error);
     return NextResponse.json(
